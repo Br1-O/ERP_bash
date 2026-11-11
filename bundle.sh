@@ -24,7 +24,6 @@ cp "${BUNDLE_ROOT}/config.sh" \
    "${BUNDLE_ROOT}/erp.sh" \
    "${BUNDLE_ROOT}/server.sh" \
    "${BUNDLE_ROOT}/router.sh" \
-   "${BUNDLE_ROOT}/ejercicio-4.sh" \
    "${STAGE}/${NAME}/"
 
 cp "${BUNDLE_ROOT}/model/"*.sh "${STAGE}/${NAME}/model/"
@@ -47,7 +46,6 @@ chmod +x "${STAGE}/${NAME}/erp.sh" \
          "${STAGE}/${NAME}/frontend/router.sh" \
          "${STAGE}/${NAME}/frontend/cli/menu.sh" \
          "${STAGE}/${NAME}/tools/sqlite3_shim.py" \
-         "${STAGE}/${NAME}/ejercicio-4.sh"
 
 rm -f "${OUTPUT}"
 tar -czf "${OUTPUT}" -C "${STAGE}" "${NAME}"
