@@ -1,0 +1,126 @@
+.recipe-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-muted);
+}
+
+.recipe-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.recipe-head strong {
+    display: block;
+    font-size: 0.82rem;
+}
+
+.recipe-head small {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-soft);
+    font-size: 0.7rem;
+}
+
+.recipe-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.recipe-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 120px 70px 36px;
+    gap: 8px;
+    align-items: center;
+}
+
+.recipe-row select,
+.recipe-row input {
+    width: 100%;
+    padding: 10px 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+}
+
+.recipe-row .recipe-unit {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    text-align: center;
+}
+
+.recipe-row .remove-recipe-row {
+    height: 38px;
+}
+
+.recipe-empty {
+    padding: 9px 11px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 10px;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+}
+
+.recipe-quick {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+}
+
+.recipe-quick summary {
+    cursor: pointer;
+    color: var(--accent-strong);
+    font-size: 0.73rem;
+    font-weight: 700;
+}
+
+.quick-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.quick-grid .field input,
+.quick-grid .field select {
+    width: 100%;
+}
+
+.recipe-quick-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.recipe-quick-actions .form-error {
+    margin: 0;
+    flex: 1;
+}
+
+@media (max-width: 760px) {
+    .recipe-row {
+        grid-template-columns: minmax(0, 1fr) 100px 36px;
+    }
+
+    .recipe-row .recipe-unit {
+        display: none;
+    }
+
+    .quick-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 520px) {
+    .quick-grid {
+        grid-template-columns: 1fr;
+    }
+}

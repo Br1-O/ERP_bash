@@ -11,6 +11,7 @@ analytics_daily_json() {
     local raw
     raw=$(db_query "SELECT date(timestamp), SUM(total_amount), COUNT(*)
                     FROM Sales
+                    WHERE status = 'finished'
                     GROUP BY date(timestamp)
                     ORDER BY date(timestamp);")
 
@@ -73,6 +74,7 @@ analytics_binomial_json() {
     local peak_row peak_hour peak_count n k
     peak_row=$(db_query "SELECT strftime('%H', timestamp), COUNT(*)
                          FROM Sales
+                         WHERE status = 'finished'
                          GROUP BY strftime('%H', timestamp)
                          ORDER BY 2 DESC
                          LIMIT 1;")
@@ -156,7 +158,8 @@ analytics_reorder_products_json() {
                                    SUM(si.quantity) AS day_qty
                             FROM SaleItems si
                             JOIN Sales s ON s.id = si.sale_id
-                            WHERE date(s.timestamp) >= date('now', '-29 days')
+                            WHERE s.status = 'finished'
+                              AND date(s.timestamp) >= date('now', '-29 days')
                             GROUP BY si.product_id, date(s.timestamp)
                         ) daily
                         GROUP BY product_id
@@ -244,7 +247,8 @@ analytics_hypothesis_json() {
                              FROM SaleItems si
                              JOIN Sales s ON s.id = si.sale_id
                              JOIN Products p ON p.id = si.product_id
-                             WHERE date(s.timestamp) >= date('now', '-30 days');")
+                             WHERE s.status = 'finished'
+                               AND date(s.timestamp) >= date('now', '-30 days');")
         [[ -n "${feedback}" ]] && IFS='|' read -r successes trials <<< "${feedback}"
     fi
 
@@ -282,7 +286,8 @@ analytics_basket_json() {
                          FROM Products p
                          JOIN SaleItems si ON si.product_id = p.id
                          JOIN Sales s ON s.id = si.sale_id
-                         WHERE p.active = 1 AND date(s.timestamp) >= date('now', '-59 days')
+                         WHERE p.active = 1 AND s.status = 'finished'
+                           AND date(s.timestamp) >= date('now', '-59 days')
                          GROUP BY p.id
                          ORDER BY units DESC, p.id
                          LIMIT 6;")
@@ -304,6 +309,7 @@ analytics_basket_json() {
                       FROM SaleItems si
                       JOIN Sales s ON s.id = si.sale_id
                       WHERE si.product_id IN (${ids})
+                        AND s.status = 'finished'
                         AND date(s.timestamp) >= date('now', '-59 days')
                       GROUP BY si.sale_id, si.product_id
                       ORDER BY si.sale_id;")
@@ -416,6 +422,7 @@ analytics_categories_json() {
                     JOIN Sales s ON s.id = si.sale_id
                     JOIN Products p ON p.id = si.product_id
                     JOIN Categories c ON c.id = p.category_id
+                    WHERE s.status = 'finished'
                     GROUP BY c.id
                     ORDER BY 2 DESC;")
 
@@ -479,11 +486,11 @@ analytics_alerts_json() {
 
 analytics_kpis_json() {
     local revenue sales_count units avg_ticket active_products inventory_value customers low_count
-    revenue=$(db_scalar "SELECT COALESCE(SUM(total_amount), 0) FROM Sales WHERE date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
-    sales_count=$(db_scalar "SELECT COUNT(*) FROM Sales WHERE date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+    revenue=$(db_scalar "SELECT COALESCE(SUM(total_amount), 0) FROM Sales WHERE status = 'finished' AND date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+    sales_count=$(db_scalar "SELECT COUNT(*) FROM Sales WHERE status = 'finished' AND date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
     units=$(db_scalar "SELECT COALESCE(SUM(si.quantity), 0)
                        FROM SaleItems si JOIN Sales s ON s.id = si.sale_id
-                       WHERE date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+                       WHERE s.status = 'finished' AND date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
     active_products=$(db_scalar "SELECT COUNT(*) FROM Products WHERE active = 1;" 2>/dev/null || printf '0')
     inventory_value=$(db_scalar "SELECT COALESCE(SUM(stock * cost), 0) FROM Products WHERE active = 1;" 2>/dev/null || printf '0')
     customers=$(db_scalar "SELECT COUNT(*) FROM Customers;" 2>/dev/null || printf '0')

@@ -902,7 +902,10 @@
                 value = stock;
                 quantity.value = String(stock);
             }
-            lineTotal.textContent = fmtMoney(price * value);
+            const priceCents = window.ErpBilling?.Money.toCents(price) || 0;
+            lineTotal.textContent = window.ErpBilling
+                ? window.ErpBilling.Money.formatCents(priceCents * value)
+                : fmtMoney(price * value);
             updateSaleTotal();
         };
 
@@ -922,15 +925,51 @@
         return row;
     }
 
-    function updateSaleTotal() {
-        const total = Array.from(document.querySelectorAll('#sale-items .sale-item-row')).reduce((sum, row) => {
+    function saleTotals() {
+        const billing = window.ErpBilling;
+        const subtotalCents = Array.from(document.querySelectorAll('#sale-items .sale-item-row')).reduce((sum, row) => {
             const select = row.querySelector('.sale-product');
             const quantity = row.querySelector('.sale-quantity');
             const option = select?.selectedOptions[0];
-            const price = Number(option?.dataset.price) || 0;
-            return sum + price * (Number(quantity?.value) || 0);
+            const priceCents = billing.Money.toCents(option?.dataset.price) || 0;
+            return sum + priceCents * (Number(quantity?.value) || 0);
         }, 0);
-        text('sale-total', fmtMoney(total));
+        const type = $('sale-discount-type')?.value || 'none';
+        const rawValue = $('sale-discount-value')?.value || '0';
+        const result = billing.apply(type, subtotalCents, rawValue);
+        return { billing, subtotalCents, type, rawValue, result };
+    }
+
+    function syncDiscountFields() {
+        const type = $('sale-discount-type')?.value || 'none';
+        const field = $('sale-discount-value-field');
+        const input = $('sale-discount-value');
+        const strategy = window.ErpBilling?.strategies?.[type];
+        if (field) field.hidden = type === 'none';
+        if (input) {
+            input.disabled = type === 'none';
+            if (type === 'none') input.value = '0';
+        }
+        const label = $('sale-discount-value-label');
+        if (label) label.textContent = strategy?.valueLabel || 'Valor del descuento';
+        updateSaleTotal();
+    }
+
+    function updateSaleTotal() {
+        const billing = window.ErpBilling;
+        if (!billing) return;
+        const { subtotalCents, type, result } = saleTotals();
+        const discountRow = $('sale-discount-row');
+        const discountLabel = $('sale-discount-label');
+        text('sale-subtotal', billing.Money.formatCents(subtotalCents));
+        if (discountRow) discountRow.hidden = type === 'none';
+        if (discountLabel && type === 'percent') {
+            discountLabel.textContent = 'Descuento porcentual';
+        } else if (discountLabel) {
+            discountLabel.textContent = 'Descuento';
+        }
+        text('sale-discount', result ? `-${billing.Money.formatCents(result.discountCents)}` : '—');
+        text('sale-total', result ? billing.Money.formatCents(result.totalCents) : '—');
     }
 
     function addSaleItem(defaultId) {
@@ -960,6 +999,9 @@
         items.innerHTML = '';
         error.hidden = true;
         error.textContent = '';
+        if ($('sale-discount-type')) $('sale-discount-type').value = 'none';
+        if ($('sale-discount-value')) $('sale-discount-value').value = '0';
+        syncDiscountFields();
         modal.hidden = false;
         addSaleItem();
         customerSelect.focus();
@@ -990,6 +1032,15 @@
             return;
         }
 
+        const totals = saleTotals();
+        if (!totals.result) {
+            if (error) {
+                error.textContent = 'El descuento ingresado no es válido para el subtotal de la venta.';
+                error.hidden = false;
+            }
+            return;
+        }
+
         if (button) {
             button.disabled = true;
             button.textContent = 'Registrando…';
@@ -1000,7 +1051,13 @@
             const response = await fetch('/api/sales', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ customer_id: customerId, payment_method: payment, items })
+                body: JSON.stringify({
+                    customer_id: customerId,
+                    payment_method: payment,
+                    discount_type: totals.type,
+                    discount_value: totals.type === 'none' ? '0' : totals.rawValue,
+                    items
+                })
             });
 
             if (response.status === 401) {
@@ -1038,6 +1095,8 @@
         $('cancel-sale')?.addEventListener('click', closeSaleModal);
         $('add-sale-item')?.addEventListener('click', () => addSaleItem());
         $('submit-sale')?.addEventListener('click', submitSale);
+        $('sale-discount-type')?.addEventListener('change', syncDiscountFields);
+        $('sale-discount-value')?.addEventListener('input', updateSaleTotal);
 
         modal.addEventListener('click', (event) => {
             if (event.target === modal) closeSaleModal();
@@ -1045,6 +1104,157 @@
 
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape' && !modal.hidden) closeSaleModal();
+        });
+    }
+
+    function syncError(message) {
+        const error = $('sync-error');
+        if (!error) return;
+        error.textContent = message || '';
+        error.hidden = !message;
+    }
+
+    function syncAppend(statusElement, tag, className, value) {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        element.textContent = value;
+        statusElement.appendChild(element);
+        return element;
+    }
+
+    function renderSyncStatus(status) {
+        const box = $('sync-status');
+        if (!box) return;
+        box.replaceChildren();
+        box.className = 'sync-status';
+
+        if (!status || !status.configured) {
+            syncAppend(box, 'strong', '', 'Sin configurar');
+            syncAppend(box, 'span', 'sync-detail', 'Guardá la URL del endpoint PostgreSQL para habilitar la sincronización.');
+            return;
+        }
+
+        syncAppend(box, 'strong', '', `Endpoint configurado${status.token_configured ? ' · token guardado' : ''}`);
+        syncAppend(box, 'span', 'sync-detail', status.endpoint || '');
+
+        if (status.last_at) {
+            box.classList.add(status.last_status === 'ok' ? 'is-ok' : 'is-error');
+            syncAppend(box, 'span', '', `Última sincronización: ${status.last_at} · ${status.last_status === 'ok' ? 'correcta' : 'con error'}`);
+            if (status.last_message) syncAppend(box, 'span', 'sync-detail', status.last_message);
+        } else {
+            syncAppend(box, 'span', 'sync-detail', 'Todavía no se envió ningún snapshot desde este equipo.');
+        }
+    }
+
+    async function syncFetchStatus() {
+        const response = await fetch('/api/sync/status', { headers: { Accept: 'application/json' } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'No se pudo consultar el estado de sincronización.');
+        renderSyncStatus(payload);
+        return payload;
+    }
+
+    async function syncSaveConfiguration(showSuccess = true) {
+        const urlInput = $('sync-url');
+        const tokenInput = $('sync-token');
+        if (!urlInput) return false;
+
+        const url = urlInput.value.trim();
+        if (!url) {
+            syncError('Ingresá la URL del endpoint PostgreSQL.');
+            return false;
+        }
+
+        const response = await fetch('/api/sync/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({ url, token: tokenInput ? tokenInput.value.trim() : '' })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'No se pudo guardar la configuración.');
+
+        if (tokenInput) tokenInput.value = '';
+        syncError('');
+        if (showSuccess) toast('Sincronización configurada', payload.message || 'La URL fue guardada. Actualizando estado…');
+        await syncFetchStatus();
+        return true;
+    }
+
+    function initSync() {
+        const openButton = $('open-sync-modal');
+        const modal = $('sync-modal');
+        if (!openButton || !modal) return;
+
+        const open = async () => {
+            syncError('');
+            modal.hidden = false;
+            const statusBox = $('sync-status');
+            if (statusBox) {
+                statusBox.className = 'sync-status';
+                statusBox.textContent = 'Consultando estado…';
+            }
+            try {
+                const status = await syncFetchStatus();
+                const urlInput = $('sync-url');
+                if (urlInput && status.endpoint) urlInput.value = status.endpoint;
+            } catch (error) {
+                syncError(error.message);
+            }
+        };
+
+        const close = () => {
+            modal.hidden = true;
+        };
+
+        openButton.addEventListener('click', open);
+        $('close-sync-modal')?.addEventListener('click', close);
+        $('cancel-sync')?.addEventListener('click', close);
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) close();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !modal.hidden) close();
+        });
+
+        $('save-sync-config')?.addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+                await syncSaveConfiguration();
+            } catch (error) {
+                syncError(error.message);
+                toast('No se pudo guardar', error.message, 'error');
+            } finally {
+                button.disabled = false;
+            }
+        });
+
+        $('run-sync')?.addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            const label = button.textContent;
+            button.textContent = 'Sincronizando…';
+            syncError('');
+            try {
+                await syncSaveConfiguration(false);
+                const response = await fetch('/api/sync/push', {
+                    method: 'POST',
+                    headers: { Accept: 'application/json' }
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(payload.error || 'No se pudo sincronizar.');
+                toast('Sincronización completada', payload.message || 'El snapshot fue enviado a PostgreSQL.');
+                await syncFetchStatus();
+            } catch (error) {
+                syncError(error.message);
+                toast('Sincronización con error', error.message, 'error');
+                try {
+                    await syncFetchStatus();
+                } catch (statusError) { /* conservar el error original */ }
+            } finally {
+                button.disabled = false;
+                button.textContent = label;
+            }
         });
     }
 
@@ -1099,7 +1309,6 @@
         initTabs();
         initSaleModal();
         initContacts();
-        initSidebar();
 
         let resizeTimer = null;
         window.addEventListener('resize', () => {
@@ -1113,6 +1322,8 @@
     }
 
     initTheme();
+    initSidebar();
+    initSync();
 
     if (ERP) {
         initDashboard();

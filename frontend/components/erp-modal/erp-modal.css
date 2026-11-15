@@ -1,0 +1,29 @@
+erp-modal {
+    display: contents;
+}
+
+.erp-modal-card.modal-wide {
+    width: min(920px, 100%);
+}
+
+.erp-modal-card .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.erp-modal-card .modal-footer:empty {
+    display: none;
+}
+
+.erp-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+body.erp-modal-open {
+    overflow: hidden;
+}

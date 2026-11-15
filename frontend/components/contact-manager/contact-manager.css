@@ -1,0 +1,21 @@
+.contact-legend {
+    margin: -4px 0 4px;
+}
+
+.contact-card {
+    cursor: pointer;
+}
+
+.contact-card .supplies-line {
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    line-height: 1.45;
+}
+
+.contact-card .supplies-line strong {
+    color: var(--text-soft);
+}
+
+#contact-detail-modal .detail-section-title {
+    margin-top: 2px;
+}

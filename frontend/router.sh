@@ -21,11 +21,27 @@ is_api_path() {
 }
 
 assets_route() {
-    case "$1" in
+    local path="$1" component_dir component_file extension
+    case "${path}" in
         /assets/app.css) http_send_file "${APP_DIR}/frontend/assets/app.css" "text/css; charset=UTF-8" ;;
         /assets/app.js) http_send_file "${APP_DIR}/frontend/assets/app.js" "application/javascript; charset=UTF-8" ;;
+        /assets/components.js) http_send_file "${APP_DIR}/frontend/assets/components.js" "application/javascript; charset=UTF-8" ;;
+        /assets/billing.js) http_send_file "${APP_DIR}/frontend/assets/billing.js" "application/javascript; charset=UTF-8" ;;
         /favicon.ico) http_send 204 "image/x-icon" "" ;;
-        *) return 1 ;;
+        *)
+            if [[ "${path}" =~ ^/components/([a-zA-Z0-9_-]+)/([a-zA-Z0-9_-]+)\.(js|css|html)$ ]]; then
+                component_dir="${BASH_REMATCH[1]}"
+                component_file="${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+                extension="${BASH_REMATCH[3]}"
+                case "${extension}" in
+                    js) http_send_file "${APP_DIR}/frontend/components/${component_dir}/${component_file}" "application/javascript; charset=UTF-8" ;;
+                    css) http_send_file "${APP_DIR}/frontend/components/${component_dir}/${component_file}" "text/css; charset=UTF-8" ;;
+                    html) http_send_file "${APP_DIR}/frontend/components/${component_dir}/${component_file}" "text/html; charset=UTF-8" ;;
+                esac
+                return 0
+            fi
+            return 1
+            ;;
     esac
     return 0
 }
@@ -102,9 +118,115 @@ handle_dashboard() {
     http_send 200 "text/html; charset=UTF-8" "${html}"
 }
 
+handle_inventory_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_inventory_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
+handle_purchases_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_purchases_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
+handle_orders_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_orders_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
+handle_settings_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_settings_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
+handle_contacts_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_contacts_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
 handle_api_session_required() {
     require_api_session || return 1
     return 0
+}
+
+handle_api_admin_required() {
+    handle_api_session_required || return 1
+    if [[ "${AUTH_ROLE}" != "admin" ]]; then
+        http_json_error "Solo un administrador puede realizar esta acción." 403
+        return 1
+    fi
+    return 0
+}
+
+handle_api_sync_status() {
+    handle_api_admin_required || return
+    http_send_json "$(api_sync_status_json)" 200
+}
+
+handle_api_sync_config() {
+    handle_api_admin_required || return
+
+    if [[ "${HTTP_CONTENT_TYPE}" != *application/json* && "${HTTP_CONTENT_TYPE}" != *application/x-www-form-urlencoded* ]]; then
+        http_json_error "Formato de datos no soportado." 400
+        return
+    fi
+
+    local url token clear_token
+    url=$(json_body_param "url" "")
+    token=$(json_body_param "token" "")
+    clear_token=$(json_body_param "clear_token" "0")
+
+    if api_sync_save_config "${url}" "${token}" "${clear_token}"; then
+        http_send_json "{\"ok\":true,\"message\":\"Configuración de sincronización guardada.\"}" 200
+    else
+        http_json_error "${SYNC_ERROR}" 400
+    fi
+}
+
+handle_api_sync_push() {
+    handle_api_admin_required || return
+
+    if api_sync_push; then
+        http_send_json "{\"ok\":true,\"message\":$(json_quote "${SYNC_MESSAGE}")}" 200
+    else
+        local status=502
+        [[ "${SYNC_ERROR}" == *"Configure"* ]] && status=400
+        http_json_error "${SYNC_ERROR}" "${status}"
+    fi
 }
 
 handle_api_sales() {
@@ -115,9 +237,11 @@ handle_api_sales() {
         return
     fi
 
-    local customer_id payment_method
+    local customer_id payment_method discount_type discount_value
     customer_id=$(json_body_param "customer_id" "0")
     payment_method=$(json_body_param "payment_method" "Efectivo")
+    discount_type=$(json_body_param "discount_type" "none")
+    discount_value=$(json_body_param "discount_value" "0")
 
     local -a product_ids=()
     local -a quantities=()
@@ -126,8 +250,9 @@ handle_api_sales() {
         return
     fi
 
-    if api_register_sale "${customer_id}" "${payment_method}" product_ids quantities; then
-        http_send_json "{\"ok\":true,\"sale_id\":$(json_number "${SALE_ID}"),\"total\":$(json_number "${SALE_TOTAL}")}" 201
+    if api_register_sale "${customer_id}" "${payment_method}" product_ids quantities \
+        "${discount_type}" "${discount_value}"; then
+        http_send_json "{\"ok\":true,\"sale_id\":$(json_number "${SALE_ID}"),\"subtotal\":$(json_number "${SALE_SUBTOTAL}"),\"discount\":$(json_number "${SALE_DISCOUNT}"),\"total\":$(json_number "${SALE_TOTAL}")}" 201
     else
         local status=400
         [[ "${AUTH_ERROR}" == *"transacción"* ]] && status=500
@@ -195,7 +320,8 @@ handle_api_supplier_create() {
 
 handle_api_product_create() {
     handle_api_session_required || return
-    local name category_id stock threshold cost price seasonal
+    local name category_id stock threshold cost price seasonal consume is_combo
+    local recipe_description steps_text
     name=$(json_body_param "name" "")
     category_id=$(json_body_param "category_id" "0")
     stock=$(json_body_param "stock" "0")
@@ -205,12 +331,427 @@ handle_api_product_create() {
     price=$(json_body_param "price" "0")
     seasonal=$(json_body_param "seasonal" "0")
     [[ "${seasonal}" == "0" ]] && seasonal=$(json_body_param "is_seasonal" "0")
+    consume=$(json_body_param "consume_recipe" "0")
+    is_combo=$(json_body_param "is_combo" "0")
+    recipe_description=$(json_body_param "recipe_description" "")
+    steps_text=$(json_body_param "steps_text" "")
 
-    if api_create_product "${name}" "${category_id}" "${stock}" "${threshold}" "${cost}" "${price}" "${seasonal}"; then
-        http_send_json "{\"ok\":true,\"product_id\":$(json_number "$(db_last_insert_id)")}" 201
+    local -a recipe_ids=()
+    local -a recipe_qtys=()
+    local -a recipe_costs=()
+    json_body_parse_input_items recipe_ids recipe_qtys recipe_costs || true
+
+    local -a component_ids=()
+    local -a component_qtys=()
+    json_body_parse_component_items component_ids component_qtys || true
+
+    if api_inv_create_product "${name}" "${category_id}" "${stock}" "${threshold}" "${cost}" "${price}" "${seasonal}" "${consume}" "${is_combo}" "${recipe_description}" "${steps_text}" recipe_ids recipe_qtys component_ids component_qtys; then
+        http_send_json "{\"ok\":true,\"product_id\":$(json_number "${INV_PRODUCT_ID}")}" 201
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=409
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_product_update() {
+    local product_id="$1"
+    handle_api_session_required || return
+    local name category_id threshold cost price seasonal active is_combo
+    local recipe_description steps_text
+    name=$(json_body_param "name" "")
+    category_id=$(json_body_param "category_id" "0")
+    threshold=$(json_body_param "min_threshold" "0")
+    [[ "${threshold}" == "0" ]] && threshold=$(json_body_param "min_production_threshold" "0")
+    cost=$(json_body_param "cost" "0")
+    price=$(json_body_param "price" "0")
+    seasonal=$(json_body_param "seasonal" "0")
+    [[ "${seasonal}" == "0" ]] && seasonal=$(json_body_param "is_seasonal" "0")
+    active=$(json_body_param "active" "1")
+    is_combo=$(json_body_param "is_combo" "0")
+    recipe_description=$(json_body_param "recipe_description" "")
+    steps_text=$(json_body_param "steps_text" "")
+
+    local update_recipe=0 update_combo=0
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        [[ "${HTTP_BODY}" == *\"items\"* || "${HTTP_BODY}" == *\"steps_text\"* || "${HTTP_BODY}" == *\"recipe_description\"* ]] && update_recipe=1
+        [[ "${HTTP_BODY}" == *\"components\"* ]] && update_combo=1
+    else
+        [[ -n "$(http_param "items_count" "")" || -n "$(http_param "steps_text" "")" || -n "$(http_param "recipe_description" "")" ]] && update_recipe=1
+        [[ -n "$(http_param "components_count" "")" ]] && update_combo=1
+    fi
+
+    local -a recipe_ids=()
+    local -a recipe_qtys=()
+    local -a recipe_costs=()
+    if (( update_recipe == 1 )); then
+        json_body_parse_input_items recipe_ids recipe_qtys recipe_costs || true
+    fi
+
+    local -a component_ids=()
+    local -a component_qtys=()
+    if (( update_combo == 1 )); then
+        json_body_parse_component_items component_ids component_qtys || true
+    fi
+
+    if api_inv_update_product "${product_id}" "${name}" "${category_id}" "${threshold}" \
+        "${cost}" "${price}" "${seasonal}" "${active}" "${update_recipe}" "${is_combo}" \
+        "${recipe_description}" "${steps_text}" "${update_combo}" \
+        recipe_ids recipe_qtys component_ids component_qtys; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=409
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_product_delete() {
+    local product_id="$1"
+    handle_api_session_required || return
+    if api_inv_delete_product "${product_id}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=404
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_product_stock() {
+    local product_id="$1"
+    handle_api_session_required || return
+    local quantity mode consume
+    quantity=$(json_body_param "quantity" "0")
+    mode=$(json_body_param "mode" "add")
+    consume=$(json_body_param "consume_recipe" "0")
+
+    local -a input_ids=()
+    local -a quantities=()
+    local -a unit_costs=()
+    json_body_parse_input_items input_ids quantities unit_costs || true
+
+    if api_inv_adjust_product_stock "${product_id}" "${quantity}" "${mode}" "${consume}" input_ids quantities; then
+        local stock
+        stock=$(db_scalar "SELECT stock FROM Products WHERE id = ${product_id};")
+        http_send_json "{\"ok\":true,\"stock\":$(json_number "${stock}")}" 200
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=404
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_input_update() {
+    local input_id="$1"
+    handle_api_session_required || return
+    local name category_id unit cost supplier_id threshold active stock
+    name=$(json_body_param "name" "")
+    category_id=$(json_body_param "category_id" "0")
+    unit=$(json_body_param "unit" "unidades")
+    cost=$(json_body_param "cost" "0")
+    supplier_id=$(json_body_param "supplier_id" "0")
+    threshold=$(json_body_param "min_threshold" "0")
+    [[ "${threshold}" == "0" ]] && threshold=$(json_body_param "min_stock_threshold" "0")
+    active=$(json_body_param "active" "1")
+    stock=$(json_body_param "stock" "")
+
+    if api_inv_update_input "${input_id}" "${name}" "${category_id}" "${unit}" "${cost}" \
+        "${supplier_id}" "${threshold}" "${active}" "${stock}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=409
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_input_delete() {
+    local input_id="$1"
+    handle_api_session_required || return
+    if api_inv_delete_input "${input_id}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status=400
+        (( rc == 2 )) && status=404
+        http_json_error "${AUTH_ERROR}" "${status}"
+    fi
+}
+
+handle_api_inventory_products() {
+    handle_api_session_required || return
+    local q category state page per_page
+    q=$(http_param "q" "")
+    category=$(http_param "category" "0")
+    state=$(http_param "state" "active")
+    page=$(http_param "page" "1")
+    per_page=$(http_param "per_page" "8")
+    http_send_json "$(api_inv_products_json "${q}" "${category}" "${state}" "${page}" "${per_page}")" 200
+}
+
+handle_api_inventory_inputs() {
+    handle_api_session_required || return
+    local q supplier state page per_page
+    q=$(http_param "q" "")
+    supplier=$(http_param "supplier" "0")
+    state=$(http_param "state" "active")
+    page=$(http_param "page" "1")
+    per_page=$(http_param "per_page" "8")
+    http_send_json "$(api_inv_inputs_json "${q}" "${supplier}" "${state}" "${page}" "${per_page}")" 200
+}
+
+handle_api_inventory_meta() {
+    handle_api_session_required || return
+    http_send_json "$(api_inv_meta_json)" 200
+}
+
+handle_api_product_detail() {
+    local product_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_inv_product_detail_json "${product_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Producto no encontrado." 404
+    fi
+}
+
+handle_api_input_detail() {
+    local input_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_inv_input_detail_json "${input_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Insumo no encontrado." 404
+    fi
+}
+
+handle_api_supplier_detail() {
+    local supplier_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_inv_supplier_detail_json "${supplier_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Proveedor no encontrado." 404
+    fi
+}
+
+handle_api_purchases_list() {
+    handle_api_session_required || return
+    local q supplier page per_page
+    q=$(http_param "q" "")
+    supplier=$(http_param "supplier" "0")
+    page=$(http_param "page" "1")
+    per_page=$(http_param "per_page" "8")
+    http_send_json "$(api_purchases_json "${q}" "${supplier}" "${page}" "${per_page}")" 200
+}
+
+handle_api_purchase_detail() {
+    local purchase_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_purchase_detail_json "${purchase_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Compra no encontrada." 404
+    fi
+}
+
+handle_api_purchase_create() {
+    handle_api_session_required || return
+    local supplier_id notes
+    supplier_id=$(json_body_param "supplier_id" "0")
+    notes=$(json_body_param "notes" "")
+
+    local -a input_ids=()
+    local -a quantities=()
+    local -a unit_costs=()
+    json_body_parse_input_items input_ids quantities unit_costs || true
+
+    if api_purchase_create "${supplier_id}" "${notes}" input_ids quantities unit_costs; then
+        http_send_json "{\"ok\":true,\"purchase_id\":$(json_number "${PURCHASE_ID}")}" 201
     else
         http_json_error "${AUTH_ERROR}" 400
     fi
+}
+
+handle_api_orders_list() {
+    handle_api_session_required || return
+    local q status page per_page
+    q=$(http_param "q" "")
+    status=$(http_param "status" "all")
+    page=$(http_param "page" "1")
+    per_page=$(http_param "per_page" "8")
+    http_send_json "$(api_orders_json "${q}" "${status}" "${page}" "${per_page}")" 200
+}
+
+handle_api_order_detail() {
+    local order_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_order_detail_json "${order_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Pedido no encontrado." 404
+    fi
+}
+
+handle_api_order_create() {
+    handle_api_session_required || return
+    local customer_id customer_name customer_type customer_phone customer_email
+    local payment_method notes discount_type discount_value status save_customer
+    customer_id=$(json_body_param "customer_id" "0")
+    customer_name=$(json_body_param "customer_name" "")
+    customer_type=$(json_body_param "customer_type" "Minorista")
+    customer_phone=$(json_body_param "customer_phone" "")
+    customer_email=$(json_body_param "customer_email" "")
+    payment_method=$(json_body_param "payment_method" "Efectivo")
+    notes=$(json_body_param "notes" "")
+    discount_type=$(json_body_param "discount_type" "none")
+    discount_value=$(json_body_param "discount_value" "0")
+    status=$(json_body_param "status" "pending")
+    save_customer=$(json_body_param "save_customer" "1")
+
+    local -a product_ids=()
+    local -a quantities=()
+    local -a unit_prices=()
+    if ! json_body_parse_order_items product_ids quantities unit_prices; then
+        http_json_error "El pedido debe incluir al menos un producto." 400
+        return
+    fi
+
+    if api_order_create "${customer_id}" "${customer_name}" "${customer_type}" \
+        "${customer_phone}" "${customer_email}" "${payment_method}" "${notes}" \
+        "${discount_type}" "${discount_value}" "${status}" "${save_customer}" \
+        product_ids quantities unit_prices; then
+        http_send_json "{\"ok\":true,\"order_id\":$(json_number "${ORDER_ID}"),\"total\":$(json_number "${ORDER_TOTAL}")}" 201
+    else
+        local rc=$? status_code=400
+        (( rc == 2 )) && status_code=404
+        http_json_error "${AUTH_ERROR}" "${status_code}"
+    fi
+}
+
+handle_api_order_update() {
+    local order_id="$1"
+    handle_api_session_required || return
+    local customer_id payment_method notes discount_type discount_value status
+    customer_id=$(json_body_param "customer_id" "-1")
+    payment_method=$(json_body_param "payment_method" "__KEEP__")
+    notes=$(json_body_param "notes" "__KEEP__")
+    discount_type=$(json_body_param "discount_type" "__KEEP__")
+    discount_value=$(json_body_param "discount_value" "__KEEP__")
+    status=$(json_body_param "status" "__KEEP__")
+
+    local items_provided=0
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        [[ "${HTTP_BODY}" == *\"items\"* ]] && items_provided=1
+    else
+        [[ -n "$(http_param "items_count" "")" ]] && items_provided=1
+    fi
+
+    local -a product_ids=()
+    local -a quantities=()
+    local -a unit_prices=()
+    if (( items_provided == 1 )); then
+        json_body_parse_order_items product_ids quantities unit_prices || true
+    fi
+
+    if api_order_update "${order_id}" "${customer_id}" "${payment_method}" "${notes}" \
+        "${discount_type}" "${discount_value}" "${status}" "${items_provided}" \
+        product_ids quantities unit_prices; then
+        http_send_json "{\"ok\":true,\"order_id\":$(json_number "${ORDER_ID}"),\"total\":$(json_number "${ORDER_TOTAL}")}" 200
+    else
+        local rc=$? status_code=400
+        (( rc == 2 )) && status_code=404
+        http_json_error "${AUTH_ERROR}" "${status_code}"
+    fi
+}
+
+handle_api_order_status() {
+    local order_id="$1"
+    handle_api_session_required || return
+    local status
+    status=$(json_body_param "status" "")
+    if api_order_set_status "${order_id}" "${status}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status_code=400
+        (( rc == 2 )) && status_code=404
+        http_json_error "${AUTH_ERROR}" "${status_code}"
+    fi
+}
+
+handle_api_order_delete() {
+    local order_id="$1"
+    handle_api_session_required || return
+    if api_order_delete "${order_id}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        local rc=$? status_code=400
+        (( rc == 2 )) && status_code=404
+        http_json_error "${AUTH_ERROR}" "${status_code}"
+    fi
+}
+
+handle_api_business_get() {
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_business_json); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "No se encontró la información del negocio." 404
+    fi
+}
+
+handle_api_business_update() {
+    handle_api_admin_required || return
+    local name instagram facebook phone email website
+    name=$(json_body_param "name" "")
+    instagram=$(json_body_param "instagram" "")
+    facebook=$(json_body_param "facebook" "")
+    phone=$(json_body_param "phone" "")
+    email=$(json_body_param "email" "")
+    website=$(json_body_param "website" "")
+
+    if api_business_update "${name}" "${instagram}" "${facebook}" "${phone}" "${email}" "${website}"; then
+        http_send_json '{"ok":true}' 200
+    else
+        http_json_error "${AUTH_ERROR}" 400
+    fi
+}
+
+handle_api_invoice_purchase() {
+    local purchase_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_invoice_purchase_json "${purchase_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Compra no encontrada." 404
+    fi
+}
+
+handle_api_invoice_order() {
+    local order_id="$1"
+    handle_api_session_required || return
+    local payload rc
+    payload=$(api_invoice_order_json "${order_id}")
+    rc=$?
+    if (( rc == 0 )); then
+        http_send_json "${payload}" 200
+    elif (( rc == 2 )); then
+        http_json_error "Solo se pueden facturar pedidos finalizados." 409
+    else
+        http_json_error "Pedido no encontrado." 404
+    fi
+}
+
+handle_api_recommendations() {
+    handle_api_session_required || return
+    http_send_json "$(api_recommendations_json)" 200
 }
 
 handle_api_input_create() {
@@ -264,6 +805,71 @@ handle_request() {
         return
     fi
 
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/products/([0-9]+)$ ]]; then
+        handle_api_product_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "PUT" && "${path}" =~ ^/api/products/([0-9]+)$ ]]; then
+        handle_api_product_update "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "DELETE" && "${path}" =~ ^/api/products/([0-9]+)$ ]]; then
+        handle_api_product_delete "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "POST" && "${path}" =~ ^/api/products/([0-9]+)/stock$ ]]; then
+        handle_api_product_stock "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/inputs/([0-9]+)$ ]]; then
+        handle_api_input_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "PUT" && "${path}" =~ ^/api/inputs/([0-9]+)$ ]]; then
+        handle_api_input_update "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "DELETE" && "${path}" =~ ^/api/inputs/([0-9]+)$ ]]; then
+        handle_api_input_delete "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/suppliers/([0-9]+)$ ]]; then
+        handle_api_supplier_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/purchases/([0-9]+)$ ]]; then
+        handle_api_purchase_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/orders/([0-9]+)$ ]]; then
+        handle_api_order_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "PUT" && "${path}" =~ ^/api/orders/([0-9]+)$ ]]; then
+        handle_api_order_update "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "DELETE" && "${path}" =~ ^/api/orders/([0-9]+)$ ]]; then
+        handle_api_order_delete "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "PUT" && "${path}" =~ ^/api/orders/([0-9]+)/status$ ]]; then
+        handle_api_order_status "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/invoices/purchases/([0-9]+)$ ]]; then
+        handle_api_invoice_purchase "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/invoices/orders/([0-9]+)$ ]]; then
+        handle_api_invoice_order "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "PUT" && "${path}" == "/api/business-info" ]]; then
+        handle_api_business_update
+        return
+    fi
+
     case "${method} ${path}" in
         "GET /") http_redirect "/dashboard" ;;
         "GET /login") handle_login_get ;;
@@ -273,8 +879,20 @@ handle_request() {
         "GET /dashboard")
             handle_dashboard "$(http_param "tab" "resumen")"
             ;;
+        "GET /inventario")
+            handle_inventory_page
+            ;;
+        "GET /compras")
+            handle_purchases_page
+            ;;
+        "GET /ventas")
+            handle_orders_page
+            ;;
+        "GET /configuracion")
+            handle_settings_page
+            ;;
         "GET /contactos")
-            handle_dashboard "agenda"
+            handle_contacts_page
             ;;
 
         "GET /api/health")
@@ -282,6 +900,15 @@ handle_request() {
             ;;
         "GET /api/dashboard")
             handle_api_session_required && http_send_json "$(analytics_dashboard_json)" 200
+            ;;
+        "GET /api/sync/status")
+            handle_api_sync_status
+            ;;
+        "POST /api/sync/config")
+            handle_api_sync_config
+            ;;
+        "POST /api/sync/push")
+            handle_api_sync_push
             ;;
         "GET /api/alerts")
             handle_api_session_required && http_send_json "$(analytics_alerts_json)" 200
@@ -291,6 +918,30 @@ handle_request() {
             ;;
         "GET /api/inputs")
             handle_api_session_required && http_send_json "$(api_list_inputs_json)" 200
+            ;;
+        "GET /api/inventory/products")
+            handle_api_inventory_products
+            ;;
+        "GET /api/inventory/inputs")
+            handle_api_inventory_inputs
+            ;;
+        "GET /api/inventory/meta")
+            handle_api_inventory_meta
+            ;;
+        "GET /api/purchases")
+            handle_api_purchases_list
+            ;;
+        "GET /api/orders")
+            handle_api_orders_list
+            ;;
+        "POST /api/orders")
+            handle_api_order_create
+            ;;
+        "GET /api/business-info")
+            handle_api_business_get
+            ;;
+        "GET /api/recommendations")
+            handle_api_recommendations
             ;;
         "GET /api/contacts")
             handle_api_session_required && http_send_json "$(api_contacts_json "$(http_param "q" "")")" 200
@@ -315,6 +966,9 @@ handle_request() {
             ;;
         "POST /api/inputs/restock")
             handle_api_input_restock
+            ;;
+        "POST /api/purchases")
+            handle_api_purchase_create
             ;;
 
         "GET /api/"*)
@@ -341,4 +995,5 @@ if ! http_read_request; then
 fi
 
 handle_request
+db_close
 exit 0

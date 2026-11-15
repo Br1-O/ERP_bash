@@ -10,21 +10,28 @@ api_list_products_json() {
     local where=""
     (( only_active == 1 )) && where="WHERE p.active = 1"
 
-    local rows row id name category stock threshold cost price active seasonal item out=""
-    rows=$(db_query "SELECT p.id, p.name, c.name, p.stock, p.min_production_threshold,
-                            p.cost, p.price, p.active, p.is_seasonal
+    local rows row id name category stock physical_stock threshold cost price active seasonal is_combo item out=""
+    rows=$(db_query "SELECT p.id, p.name, c.name,
+                            CASE WHEN p.is_combo = 1 THEN COALESCE((
+                                SELECT MIN(CAST(cp.stock / ci.quantity AS INTEGER))
+                                FROM ComboItems ci
+                                JOIN Products cp ON cp.id = ci.component_product_id
+                                WHERE ci.combo_product_id = p.id AND cp.active = 1
+                            ), 0) ELSE p.stock END,
+                            p.stock, p.min_production_threshold,
+                            p.cost, p.price, p.active, p.is_seasonal, p.is_combo
                      FROM Products p
                      JOIN Categories c ON c.id = p.category_id
                      ${where}
                      ORDER BY p.name;")
 
-    while IFS='|' read -r id name category stock threshold cost price active seasonal; do
+    while IFS='|' read -r id name category stock physical_stock threshold cost price active seasonal is_combo; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"name":%s,"category":%s,"stock":%s,"min_threshold":%s,"cost":%s,"price":%s,"active":%s,"seasonal":%s}' \
+        item=$(printf '{"id":%d,"name":%s,"category":%s,"stock":%s,"physical_stock":%s,"min_threshold":%s,"cost":%s,"price":%s,"active":%s,"seasonal":%s,"is_combo":%s}' \
             "${id}" "$(json_quote "${name}")" "$(json_quote "${category}")" \
-            "$(json_number "${stock}")" "$(json_number "${threshold}")" \
+            "$(json_number "${stock}")" "$(json_number "${physical_stock}")" "$(json_number "${threshold}")" \
             "$(json_number "${cost}")" "$(json_number "${price}")" \
-            "$(json_number "${active}")" "$(json_number "${seasonal}")")
+            "$(json_number "${active}")" "$(json_number "${seasonal}")" "$(json_number "${is_combo}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
 
@@ -58,7 +65,7 @@ api_list_customers_json() {
     rows=$(db_query "SELECT c.id, c.name, c.type, COALESCE(c.phone, ''), COALESCE(c.email, ''),
                             COUNT(s.id), COALESCE(SUM(s.total_amount), 0)
                      FROM Customers c
-                     LEFT JOIN Sales s ON s.customer_id = c.id
+                     LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished'
                      GROUP BY c.id
                      ORDER BY c.name;")
 
@@ -75,20 +82,22 @@ api_list_customers_json() {
 }
 
 api_list_suppliers_json() {
-    local rows row id name contact phone email address inputs item out=""
+    local rows row id name contact phone email address inputs supplies item out=""
     rows=$(db_query "SELECT s.id, s.name, COALESCE(s.contact_person, ''), COALESCE(s.phone, ''),
-                            COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id)
+                            COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id),
+                            COALESCE(GROUP_CONCAT(i.name, ', '), '')
                      FROM Suppliers s
                      LEFT JOIN Inputs i ON i.supplier_id = s.id
                      GROUP BY s.id
                      ORDER BY s.name;")
 
-    while IFS='|' read -r id name contact phone email address inputs; do
+    while IFS='|' read -r id name contact phone email address inputs supplies; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"name":%s,"contact":%s,"phone":%s,"email":%s,"address":%s,"inputs":%s}' \
+        item=$(printf '{"id":%d,"name":%s,"contact":%s,"phone":%s,"email":%s,"address":%s,"inputs":%s,"supplies":%s}' \
             "${id}" "$(json_quote "${name}")" "$(json_quote "${contact}")" \
             "$(json_quote "${phone}")" "$(json_quote "${email}")" \
-            "$(json_quote "${address}")" "$(json_number "${inputs}")")
+            "$(json_quote "${address}")" "$(json_number "${inputs}")" \
+            "$(json_quote "${supplies}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
 
@@ -108,7 +117,8 @@ api_contacts_json() {
 
     local suppliers customers
     suppliers=$(db_query "SELECT s.id, s.name, COALESCE(s.contact_person, ''), COALESCE(s.phone, ''),
-                                COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id)
+                                COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id),
+                                COALESCE(GROUP_CONCAT(i.name, ', '), '')
                          FROM Suppliers s
                          LEFT JOIN Inputs i ON i.supplier_id = s.id
                          WHERE 1 = 1 ${extra_supplier}
@@ -116,19 +126,20 @@ api_contacts_json() {
     customers=$(db_query "SELECT c.id, c.name, c.type, COALESCE(c.phone, ''), COALESCE(c.email, ''),
                                 COUNT(s.id), COALESCE(SUM(s.total_amount), 0)
                          FROM Customers c
-                         LEFT JOIN Sales s ON s.customer_id = c.id
+                         LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished'
                          WHERE 1 = 1 ${extra_customer}
                          GROUP BY c.id ORDER BY c.name;")
 
     local out_sup="" out_cus="" item row
-    local id name contact phone email address inputs
+    local id name contact phone email address inputs supplies
 
-    while IFS='|' read -r id name contact phone email address inputs; do
+    while IFS='|' read -r id name contact phone email address inputs supplies; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"name":%s,"contact":%s,"phone":%s,"email":%s,"address":%s,"inputs":%s}' \
+        item=$(printf '{"id":%d,"name":%s,"contact":%s,"phone":%s,"email":%s,"address":%s,"inputs":%s,"supplies":%s}' \
             "${id}" "$(json_quote "${name}")" "$(json_quote "${contact}")" \
             "$(json_quote "${phone}")" "$(json_quote "${email}")" \
-            "$(json_quote "${address}")" "$(json_number "${inputs}")")
+            "$(json_quote "${address}")" "$(json_number "${inputs}")" \
+            "$(json_quote "${supplies}")")
         out_sup+="${out_sup:+,}${item}"
     done <<< "${suppliers}"
 

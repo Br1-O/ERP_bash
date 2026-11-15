@@ -1,0 +1,30 @@
+.erp-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
+.erp-pagination-status {
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.erp-pagination button[disabled] {
+    opacity: 0.35;
+    cursor: default;
+    transform: none;
+}
+
+@media (max-width: 640px) {
+    .erp-pagination {
+        justify-content: space-between;
+    }
+
+    .erp-pagination-status {
+        font-size: 0.7rem;
+    }
+}

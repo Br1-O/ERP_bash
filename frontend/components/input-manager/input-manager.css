@@ -1,0 +1,11 @@
+.entity-card .card-metrics b {
+    font-size: 0.78rem;
+}
+
+#input-modal .form-grid {
+    align-items: start;
+}
+
+#input-detail-modal .mini-list-row .inline-actions {
+    flex: 0 0 auto;
+}

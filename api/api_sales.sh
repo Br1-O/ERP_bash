@@ -7,6 +7,8 @@ declare -g _ERP_API_SALES_LOADED=1
 
 declare -g SALE_ID=""
 declare -g SALE_TOTAL=""
+declare -g SALE_SUBTOTAL=""
+declare -g SALE_DISCOUNT=""
 declare -g BATCH_ID=""
 
 api_register_sale() {
@@ -14,10 +16,14 @@ api_register_sale() {
     local payment_method="${2:-Efectivo}"
     local -n _product_ids=$3
     local -n _quantities=$4
+    local discount_type="${5:-none}"
+    local discount_value="${6:-0}"
 
     AUTH_ERROR=""
     SALE_ID=""
     SALE_TOTAL=""
+    SALE_SUBTOTAL=""
+    SALE_DISCOUNT=""
 
     if (( ${#_product_ids[@]} == 0 )); then
         AUTH_ERROR="La venta debe incluir al menos un producto."
@@ -51,30 +57,58 @@ api_register_sale() {
     tx_begin || { AUTH_ERROR="No se pudo iniciar la transacción."; return 1; }
     db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
 
-    local stock price active name
+    local stock price active name is_combo available price_cents
+    local subtotal_cents=0
     for product_id in "${!quantity_by_product[@]}"; do
         local row
-        row=$(db_query "SELECT stock, price, active, name FROM Products WHERE id = ${product_id};")
+        row=$(db_query "SELECT stock, price, active, name, is_combo FROM Products WHERE id = ${product_id};")
         if [[ -z "${row}" ]]; then
             AUTH_ERROR="El producto ${product_id} no existe."
             tx_rollback
             return 1
         fi
-        IFS='|' read -r stock price active name <<< "${row}"
+        IFS='|' read -r stock price active name is_combo <<< "${row}"
         if (( active != 1 )); then
             AUTH_ERROR="El producto '${name}' está inactivo."
             tx_rollback
             return 1
         fi
-        if (( stock < quantity_by_product[${product_id}] )); then
+        if (( is_combo == 1 )); then
+            available=$(api_inv_product_available_stock "${product_id}")
+            if (( available < quantity_by_product[${product_id}] )); then
+                AUTH_ERROR="Stock insuficiente de componentes para el combo '${name}' (disponible: ${available})."
+                tx_rollback
+                return 1
+            fi
+        elif (( stock < quantity_by_product[${product_id}] )); then
             AUTH_ERROR="Stock insuficiente para '${name}' (disponible: ${stock})."
             tx_rollback
             return 1
         fi
+        price_cents=$(billing_money_to_cents "${price}") || {
+            AUTH_ERROR="Precio inválido para '${name}'."
+            tx_rollback
+            return 1
+        }
+        subtotal_cents=$(( subtotal_cents + price_cents * quantity_by_product[${product_id}] ))
     done
 
-    if ! db_exec "INSERT INTO Sales (timestamp, customer_id, total_amount, payment_method)
-                  VALUES (datetime('now', 'localtime'), ${safe_customer}, 0, $(db_quote "${payment_method}"));"; then
+    if ! billing_apply_strategy "${discount_type}" "${discount_value}" "${subtotal_cents}"; then
+        AUTH_ERROR="${BILLING_ERROR:-No se pudo aplicar el descuento.}"
+        tx_rollback
+        return 1
+    fi
+
+    local safe_subtotal safe_discount safe_total
+    safe_subtotal=$(billing_cents_to_decimal "${BILLING_SUBTOTAL_CENTS}")
+    safe_discount=$(billing_cents_to_decimal "${BILLING_DISCOUNT_CENTS}")
+    safe_total=$(billing_cents_to_decimal "${BILLING_TOTAL_CENTS}")
+
+    if ! db_exec "INSERT INTO Sales (timestamp, customer_id, subtotal_amount, discount_type,
+                                    discount_value, discount_amount, total_amount, payment_method)
+                  VALUES (datetime('now', 'localtime'), ${safe_customer}, ${safe_subtotal},
+                          $(db_quote "${discount_type}"), ${BILLING_DISCOUNT_VALUE_DB},
+                          ${safe_discount}, ${safe_total}, $(db_quote "${payment_method}"));"; then
         AUTH_ERROR="No se pudo registrar la venta."
         tx_rollback
         return 1
@@ -105,6 +139,8 @@ api_register_sale() {
     fi
 
     SALE_TOTAL=$(db_scalar "SELECT printf('%.2f', total_amount) FROM Sales WHERE id = ${SALE_ID};" 2>/dev/null || printf '0')
+    SALE_SUBTOTAL=$(db_scalar "SELECT printf('%.2f', subtotal_amount) FROM Sales WHERE id = ${SALE_ID};" 2>/dev/null || printf '0')
+    SALE_DISCOUNT=$(db_scalar "SELECT printf('%.2f', discount_amount) FROM Sales WHERE id = ${SALE_ID};" 2>/dev/null || printf '0')
     return 0
 }
 
@@ -173,9 +209,10 @@ api_recent_sales_json() {
     [[ "${limit}" =~ ^[0-9]+$ ]] || limit=8
     (( limit > 50 )) && limit=50
 
-    local rows row id timestamp customer total payment units item out=""
+    local rows row id timestamp customer subtotal discount total payment units item out=""
     rows=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(c.name, 'Consumidor final'),
-                            s.total_amount, s.payment_method, COALESCE(SUM(si.quantity), 0)
+                            s.subtotal_amount, s.discount_amount, s.total_amount,
+                            s.payment_method, COALESCE(SUM(si.quantity), 0)
                      FROM Sales s
                      LEFT JOIN Customers c ON c.id = s.customer_id
                      LEFT JOIN SaleItems si ON si.sale_id = s.id
@@ -183,10 +220,11 @@ api_recent_sales_json() {
                      ORDER BY s.id DESC
                      LIMIT ${limit};")
 
-    while IFS='|' read -r id timestamp customer total payment units; do
+    while IFS='|' read -r id timestamp customer subtotal discount total payment units; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"timestamp":%s,"customer":%s,"total":%s,"payment":%s,"units":%s}' \
+        item=$(printf '{"id":%d,"timestamp":%s,"customer":%s,"subtotal":%s,"discount":%s,"total":%s,"payment":%s,"units":%s}' \
             "${id}" "$(json_quote "${timestamp}")" "$(json_quote "${customer}")" \
+            "$(json_number "${subtotal}")" "$(json_number "${discount}")" \
             "$(json_number "${total}")" "$(json_quote "${payment}")" "$(json_number "${units}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"

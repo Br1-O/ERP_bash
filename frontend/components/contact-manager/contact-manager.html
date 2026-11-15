@@ -1,0 +1,84 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <label class="search-field">
+            <span>Buscar contactos</span>
+            <input type="search" data-contact-search placeholder="Nombre, email, teléfono o insumo…">
+        </label>
+        <div class="inline-actions">
+            <button class="btn ghost" type="button" data-create-customer>+ Cliente</button>
+            <button class="btn primary" type="button" data-create-supplier>+ Proveedor</button>
+        </div>
+    </div>
+
+    <div class="grid-two">
+        <article class="card manager-card">
+            <header class="card-header">
+                <div>
+                    <span class="eyebrow">Abastecimiento</span>
+                    <h3>Proveedores</h3>
+                </div>
+                <span class="badge badge-soft" data-supplier-count>0</span>
+            </header>
+            <div class="manager-filters contact-legend">
+                <span class="form-note">Haga clic en un proveedor para ver los insumos que vende y copiar su teléfono.</span>
+            </div>
+            <div class="contact-list" data-suppliers-list></div>
+            <div class="empty-state" data-suppliers-empty hidden>
+                <strong>No hay proveedores</strong>
+                <span>Cree un proveedor o cambie la búsqueda.</span>
+            </div>
+        </article>
+
+        <article class="card manager-card">
+            <header class="card-header">
+                <div>
+                    <span class="eyebrow">Comercial</span>
+                    <h3>Clientes</h3>
+                </div>
+                <span class="badge badge-soft" data-customer-count>0</span>
+            </header>
+            <div class="contact-list" data-customers-list></div>
+            <div class="empty-state" data-customers-empty hidden>
+                <strong>No hay clientes</strong>
+                <span>Cree un cliente o cambie la búsqueda.</span>
+            </div>
+        </article>
+    </div>
+</section>
+
+<erp-modal id="supplier-modal" title="Proveedor">
+    <form class="form-stack" data-supplier-form>
+        <div class="form-grid">
+            <label class="field span-2"><span>Nombre</span><input type="text" data-supplier-name maxlength="80" required></label>
+            <label class="field"><span>Persona de contacto</span><input type="text" data-supplier-contact maxlength="80"></label>
+            <label class="field"><span>Teléfono</span><input type="text" data-supplier-phone maxlength="40"></label>
+            <label class="field"><span>Email</span><input type="email" data-supplier-email maxlength="100"></label>
+            <label class="field"><span>Dirección</span><input type="text" data-supplier-address maxlength="120"></label>
+        </div>
+        <p class="form-error" data-supplier-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-supplier-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-supplier-submit>Crear proveedor</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="customer-modal" title="Cliente">
+    <form class="form-stack" data-customer-form>
+        <div class="form-grid">
+            <label class="field span-2"><span>Nombre</span><input type="text" data-customer-name maxlength="80" required></label>
+            <label class="field"><span>Tipo</span>
+                <select data-customer-type><option value="Minorista">Minorista</option><option value="Mayorista">Mayorista</option></select>
+            </label>
+            <label class="field"><span>Teléfono</span><input type="text" data-customer-phone maxlength="40"></label>
+            <label class="field"><span>Email</span><input type="email" data-customer-email maxlength="100"></label>
+        </div>
+        <p class="form-error" data-customer-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-customer-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-customer-submit>Crear cliente</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="contact-detail-modal" title="Detalle del contacto" size="wide"></erp-modal>

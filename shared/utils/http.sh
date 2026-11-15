@@ -130,26 +130,30 @@ json_extract_raw() {
     local key="${2:-}"
     [[ -z "${json}" || -z "${key}" ]] && return 1
 
-    local compact value
+    local compact rest value
     compact=$(printf '%s' "${json}" | tr -d '\n\r')
 
-    value=$(printf '%s' "${compact}" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p")
-    if [[ -n "${value}" ]]; then
+    # Se toma la primera aparición de la clave. Un `sed` con `.*` devolvería
+    # la última coincidencia y confundiría, por ejemplo, el `quantity` de la
+    # venta con el `quantity` de cada ítem del arreglo `items`.
+    rest="${compact#*\"${key}\"}"
+    [[ "${rest}" == "${compact}" ]] && return 1
+
+    if [[ "${rest}" =~ ^[[:space:]]*:[[:space:]]*\"(([^\"\\]|\\.)*)\" ]]; then
+        value="${BASH_REMATCH[1]}"
         value="${value//\\\"/\"}"
         value="${value//\\\\/\\}"
         printf '%s' "${value}"
         return 0
     fi
 
-    value=$(printf '%s' "${compact}" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\\(-\\{0,1\\}[0-9][0-9.]*\\).*/\\1/p")
-    if [[ -n "${value}" ]]; then
-        printf '%s' "${value}"
+    if [[ "${rest}" =~ ^[[:space:]]*:[[:space:]]*(-?[0-9]+([.][0-9]+)?) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
 
-    value=$(printf '%s' "${compact}" | sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\\(true\\|false\\)/\\1/p")
-    if [[ -n "${value}" ]]; then
-        printf '%s' "${value}"
+    if [[ "${rest}" =~ ^[[:space:]]*:[[:space:]]*(true|false) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
         return 0
     fi
 
@@ -220,6 +224,150 @@ json_body_parse_items() {
     fi
 
     (( ${#_product_ids[@]} > 0 ))
+}
+
+json_body_parse_input_items() {
+    local -n _input_ids=$1
+    local -n _quantities=$2
+    local -n _unit_costs=$3
+    _input_ids=()
+    _quantities=()
+    _unit_costs=()
+
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        local compact inner
+        compact=$(printf '%s' "${HTTP_BODY}" | tr -d '\n\r')
+        inner=$(printf '%s' "${compact}" | sed -n 's/.*"items"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
+        [[ -z "${inner}" ]] && return 1
+
+        local rest="${inner}" object input_id quantity unit_cost
+        while [[ "${rest}" == *'{'* ]]; do
+            object="${rest#*\{}"
+            object="${object%%\}*}"
+            input_id=$(json_extract_raw "${object}" "input_id" || true)
+            quantity=$(json_extract_raw "${object}" "quantity" || true)
+            unit_cost=$(json_extract_raw "${object}" "unit_cost" || true)
+            if [[ -n "${input_id}" && -n "${quantity}" ]]; then
+                _input_ids+=("${input_id}")
+                _quantities+=("${quantity}")
+                _unit_costs+=("${unit_cost:-0}")
+            fi
+            rest="${rest#*\}}"
+        done
+    else
+        local count input_id quantity unit_cost i
+        count=$(http_param "items_count" "0")
+        [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+
+        if (( count > 0 )); then
+            for (( i = 0; i < count; i++ )); do
+                input_id=$(http_param "input_id_${i}" "")
+                quantity=$(http_param "quantity_${i}" "")
+                unit_cost=$(http_param "unit_cost_${i}" "0")
+                if [[ -n "${input_id}" && -n "${quantity}" ]]; then
+                    _input_ids+=("${input_id}")
+                    _quantities+=("${quantity}")
+                    _unit_costs+=("${unit_cost:-0}")
+                fi
+            done
+        fi
+    fi
+
+    (( ${#_input_ids[@]} > 0 ))
+}
+
+json_body_parse_order_items() {
+    local -n _product_ids=$1
+    local -n _quantities=$2
+    local -n _unit_prices=$3
+    _product_ids=()
+    _quantities=()
+    _unit_prices=()
+
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        local compact inner
+        compact=$(printf '%s' "${HTTP_BODY}" | tr -d '\n\r')
+        inner=$(printf '%s' "${compact}" | sed -n 's/.*"items"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
+        [[ -z "${inner}" ]] && return 1
+
+        local rest="${inner}" object product_id quantity unit_price
+        while [[ "${rest}" == *'{'* ]]; do
+            object="${rest#*\{}"
+            object="${object%%\}*}"
+            product_id=$(json_extract_raw "${object}" "product_id" || true)
+            quantity=$(json_extract_raw "${object}" "quantity" || true)
+            unit_price=$(json_extract_raw "${object}" "unit_price" || true)
+            if [[ -n "${product_id}" && -n "${quantity}" ]]; then
+                _product_ids+=("${product_id}")
+                _quantities+=("${quantity}")
+                _unit_prices+=("${unit_price:-}")
+            fi
+            rest="${rest#*\}}"
+        done
+    else
+        local count product_id quantity unit_price i
+        count=$(http_param "items_count" "0")
+        [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+
+        if (( count > 0 )); then
+            for (( i = 0; i < count; i++ )); do
+                product_id=$(http_param "product_id_${i}" "")
+                quantity=$(http_param "quantity_${i}" "")
+                unit_price=$(http_param "unit_price_${i}" "")
+                if [[ -n "${product_id}" && -n "${quantity}" ]]; then
+                    _product_ids+=("${product_id}")
+                    _quantities+=("${quantity}")
+                    _unit_prices+=("${unit_price}")
+                fi
+            done
+        fi
+    fi
+
+    (( ${#_product_ids[@]} > 0 ))
+}
+
+json_body_parse_component_items() {
+    local -n _component_ids=$1
+    local -n _quantities=$2
+    _component_ids=()
+    _quantities=()
+
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        local compact inner
+        compact=$(printf '%s' "${HTTP_BODY}" | tr -d '\n\r')
+        inner=$(printf '%s' "${compact}" | sed -n 's/.*"components"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
+        [[ -z "${inner}" ]] && return 1
+
+        local rest="${inner}" object component_product_id quantity
+        while [[ "${rest}" == *'{'* ]]; do
+            object="${rest#*\{}"
+            object="${object%%\}*}"
+            component_product_id=$(json_extract_raw "${object}" "component_product_id" || true)
+            quantity=$(json_extract_raw "${object}" "quantity" || true)
+            if [[ -n "${component_product_id}" && -n "${quantity}" ]]; then
+                _component_ids+=("${component_product_id}")
+                _quantities+=("${quantity}")
+            fi
+            rest="${rest#*\}}"
+        done
+    else
+        local count component_product_id quantity i
+        count=$(http_param "components_count" "0")
+        [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+
+        if (( count > 0 )); then
+            for (( i = 0; i < count; i++ )); do
+                component_product_id=$(http_param "component_product_id_${i}" "")
+                quantity=$(http_param "quantity_${i}" "")
+                if [[ -n "${component_product_id}" && -n "${quantity}" ]]; then
+                    _component_ids+=("${component_product_id}")
+                    _quantities+=("${quantity}")
+                fi
+            done
+        fi
+    fi
+
+    (( ${#_component_ids[@]} > 0 ))
 }
 
 http_status_text() {

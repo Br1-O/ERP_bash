@@ -21,13 +21,27 @@ load_erp_modules() {
         model/db_singleton.sh \
         model/schema.sh \
         model/transactions.sh \
+        repositories/local_repository.sh \
+        repositories/postgres_repository.sh \
         api/api_auth.sh \
         api/api_catalog.sh \
+        api/api_inventory.sh \
+        api/api_purchases.sh \
+        api/billing.sh \
         api/api_sales.sh \
+        api/api_orders.sh \
+        api/api_business.sh \
+        api/api_invoices.sh \
+        api/api_sync.sh \
         api/analytics.sh \
         frontend/views/layout.sh \
         frontend/views/login.sh \
         frontend/views/dashboard.sh \
+        frontend/views/inventory.sh \
+        frontend/views/purchases.sh \
+        frontend/views/orders.sh \
+        frontend/views/settings.sh \
+        frontend/views/contacts.sh \
         frontend/cli/menu.sh
     do
         if [[ -f "${APP_ROOT_DIR}/${module}" ]]; then

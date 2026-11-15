@@ -1,0 +1,8 @@
+.business-grid {
+    display: grid;
+    gap: 12px;
+}
+
+#business-settings + * {
+    margin-top: 14px;
+}

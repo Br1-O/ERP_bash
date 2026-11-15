@@ -24,7 +24,7 @@ fi
 
 if ! db_sqlite_available; then
     ensure_package_installed "sqlite3" "sqlite3" "sqlite3" "sqlite" "sqlite3" || {
-        printf 'Se requiere sqlite3 (o Python 3 con el módulo sqlite3) para iniciar el ERP.\n' >&2
+        printf 'Se requiere sqlite3 (o Node.js con node:sqlite) para iniciar el ERP.\n' >&2
         exit 1
     }
 fi
@@ -40,6 +40,7 @@ if ! db_singleton_init; then
     printf 'No se pudo inicializar la base de datos: %s\n' "${DB_LAST_ERROR:-error desconocido}" >&2
     exit 1
 fi
+db_close
 
 LOCAL_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [[ -z "${LOCAL_IP}" ]] && LOCAL_IP="127.0.0.1"

@@ -52,6 +52,7 @@ erp_init_database() {
     sales=$(db_scalar "SELECT COUNT(*) FROM Sales;" 2>/dev/null || printf '0')
     batches=$(db_scalar "SELECT COUNT(*) FROM ProductionBatches;" 2>/dev/null || printf '0')
     journal=$(db_scalar "SELECT COUNT(*) FROM InventoryJournal;" 2>/dev/null || printf '0')
+    db_close
 
     printf '\nBase de datos lista: %s\n\n' "${ERP_DB_PATH}"
     printf '  Productos:    %s\n' "${products}"
@@ -77,6 +78,7 @@ case "${mode}" in
             exit 1
         fi
         cli_run
+        db_close
         ;;
     init|seed)
         erp_init_database

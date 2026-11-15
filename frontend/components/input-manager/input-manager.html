@@ -1,0 +1,101 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <div class="manager-filters">
+            <label class="search-field">
+                <span>Buscar insumo</span>
+                <input type="search" data-input-search placeholder="Nombre, proveedor o categoría…">
+            </label>
+            <label class="field compact-field">
+                <span>Proveedor</span>
+                <select data-input-supplier-filter><option value="0">Todos</option></select>
+            </label>
+            <label class="field compact-field">
+                <span>Estado</span>
+                <select data-input-state>
+                    <option value="active">Activos</option>
+                    <option value="low">Stock bajo</option>
+                    <option value="inactive">Inactivos</option>
+                    <option value="all">Todos</option>
+                </select>
+            </label>
+        </div>
+        <button class="btn primary" type="button" data-create-input>+ Nuevo insumo</button>
+    </div>
+
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Materias primas y envases</span>
+                <h3>Insumos, proveedores y recetas</h3>
+            </div>
+            <span class="badge badge-soft" data-input-count>0 insumos</span>
+        </header>
+        <div class="entity-grid" data-input-grid></div>
+        <div class="empty-state" data-input-empty hidden>
+            <strong>No hay insumos para mostrar</strong>
+            <span>Ajuste los filtros o cree un insumo nuevo.</span>
+        </div>
+        <erp-pagination data-input-pagination></erp-pagination>
+    </article>
+</section>
+
+<erp-modal id="input-modal" title="Insumo">
+    <form class="form-stack" data-input-form>
+        <div class="form-grid">
+            <label class="field span-2">
+                <span>Nombre</span>
+                <input type="text" data-input-name maxlength="80" required>
+            </label>
+            <label class="field">
+                <span>Categoría</span>
+                <select data-input-category></select>
+            </label>
+            <label class="field">
+                <span>Proveedor</span>
+                <select data-input-supplier></select>
+            </label>
+            <label class="field">
+                <span>Unidad</span>
+                <input type="text" data-input-unit maxlength="30" value="unidades">
+            </label>
+            <label class="field">
+                <span>Stock actual</span>
+                <input type="number" min="0" step="0.01" data-input-stock value="0">
+            </label>
+            <label class="field">
+                <span>Costo unitario</span>
+                <input type="number" min="0" step="0.01" data-input-cost value="0">
+            </label>
+            <label class="field">
+                <span>Umbral mínimo</span>
+                <input type="number" min="0" step="0.01" data-input-threshold value="0">
+            </label>
+            <label class="field checkbox-field" data-input-active-field hidden>
+                <span>Insumo activo</span>
+                <input type="checkbox" data-input-active checked>
+            </label>
+        </div>
+        <p class="form-error" data-input-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-input-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-input-submit>Guardar insumo</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="input-detail-modal" title="Detalle del insumo" size="wide"></erp-modal>
+
+<erp-modal id="restock-modal" title="Reponer insumo">
+    <form class="form-stack" data-restock-form>
+        <label class="field">
+            <span>Cantidad a agregar</span>
+            <input type="number" min="0.0001" step="0.01" data-restock-quantity value="1">
+        </label>
+        <p class="form-note">El stock se incrementa y queda registrado en la auditoría.</p>
+        <p class="form-error" data-restock-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-restock-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-restock-submit>Reponer stock</button>
+        </div>
+    </form>
+</erp-modal>

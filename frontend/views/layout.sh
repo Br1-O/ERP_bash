@@ -17,6 +17,7 @@ html_escape() {
 
 view_html_head() {
     local title="${1:-ERP de Licores Artesanales}"
+    local extra_head="${2:-}"
     cat <<EOF
 <!DOCTYPE html>
 <html lang="es" data-theme="dark">
@@ -34,6 +35,7 @@ view_html_head() {
             } catch (error) { /* almacenamiento no disponible */ }
         })();
     </script>
+${extra_head}
 </head>
 EOF
 }
@@ -45,12 +47,23 @@ view_layout_start() {
     local user="${4:-Usuario}"
     local role="${5:-admin}"
     local alert_count="${6:-0}"
+    local extra_head="${7:-}"
 
-    local dashboard_active="" contacts_active=""
+    local dashboard_active="" contacts_active="" inventory_active="" purchases_active=""
+    local orders_active="" settings_active=""
     [[ "${active_nav}" == "dashboard" ]] && dashboard_active="active"
     [[ "${active_nav}" == "contacts" ]] && contacts_active="active"
+    [[ "${active_nav}" == "inventory" ]] && inventory_active="active"
+    [[ "${active_nav}" == "purchases" ]] && purchases_active="active"
+    [[ "${active_nav}" == "orders" ]] && orders_active="active"
+    [[ "${active_nav}" == "settings" ]] && settings_active="active"
 
-    view_html_head "${title}"
+    local sync_button=""
+    if [[ "${role}" == "admin" ]]; then
+        sync_button='<button class="btn ghost small sync-button" id="open-sync-modal" type="button" title="Sincronizar con PostgreSQL"><span aria-hidden="true">↻</span><span class="sync-label">Sincronizar</span></button>'
+    fi
+
+    view_html_head "${title}" "${extra_head}"
     cat <<EOF
 <body data-active-tab="${active_tab}">
     <div class="app-shell">
@@ -68,17 +81,33 @@ view_layout_start() {
                     <span class="nav-icon">◫</span>
                     <span>Dashboard</span>
                 </a>
+                <a class="nav-link ${inventory_active}" href="/inventario">
+                    <span class="nav-icon">◈</span>
+                    <span>Inventario y recetas</span>
+                </a>
+                <a class="nav-link ${orders_active}" href="/ventas">
+                    <span class="nav-icon">▦</span>
+                    <span>Pedidos y ventas</span>
+                </a>
+                <a class="nav-link ${purchases_active}" href="/compras">
+                    <span class="nav-icon">⇄</span>
+                    <span>Compras y reposición</span>
+                </a>
                 <a class="nav-link ${contacts_active}" href="/contactos">
                     <span class="nav-icon">☏</span>
                     <span>Agenda y contactos</span>
                 </a>
                 <a class="nav-link" href="/dashboard#stock">
-                    <span class="nav-icon">◈</span>
+                    <span class="nav-icon">▤</span>
                     <span>Stock y producción</span>
                 </a>
                 <a class="nav-link" href="/dashboard#catalogo">
                     <span class="nav-icon">◉</span>
                     <span>Catálogo y canasta</span>
+                </a>
+                <a class="nav-link ${settings_active}" href="/configuracion">
+                    <span class="nav-icon">⚙</span>
+                    <span>Configuración</span>
                 </a>
             </nav>
 
@@ -102,6 +131,7 @@ view_layout_start() {
                     <p class="muted" id="page-subtitle">Gestión analítica de la destilería</p>
                 </div>
                 <div class="topbar-actions">
+                    ${sync_button}
                     <a class="alert-pill" href="/dashboard#stock" title="Alertas de stock">
                         <span class="alert-dot"></span>
                         <span id="alert-count">${alert_count}</span>
@@ -123,6 +153,49 @@ view_layout_end() {
         </div>
     </div>
     <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+    <div class="modal-backdrop" id="sync-modal" hidden>
+        <div class="modal sync-modal-card" role="dialog" aria-modal="true" aria-labelledby="sync-modal-title">
+            <div class="modal-header">
+                <div>
+                    <span class="eyebrow">Respaldo en línea</span>
+                    <h2 id="sync-modal-title">Sincronizar con PostgreSQL</h2>
+                </div>
+                <button class="icon-button" id="close-sync-modal" type="button" aria-label="Cerrar">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="sync-status" id="sync-status">
+                    <span class="muted">Consultando estado…</span>
+                </div>
+
+                <div class="form-grid sync-form-grid">
+                    <label class="field span-2">
+                        <span>URL del endpoint</span>
+                        <input id="sync-url" type="url" inputmode="url" autocomplete="off"
+                               placeholder="https://mi-proyecto.supabase.co/rest/v1/rpc/sync_erp">
+                    </label>
+                    <label class="field span-2">
+                        <span>Token / API key</span>
+                        <input id="sync-token" type="password" autocomplete="new-password"
+                               placeholder="Dejar vacío para conservar el token actual">
+                    </label>
+                </div>
+
+                <p class="sync-note">
+                    Se envía un snapshot JSON idempotente de la base local al endpoint configurado.
+                    El servicio remoto debe aplicar UPSERT en PostgreSQL. La URL se compone con
+                    <code>source=sqlite</code>, <code>schema_version</code> y <code>mode=snapshot</code>.
+                </p>
+
+                <p class="form-error" id="sync-error" hidden></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn ghost" id="cancel-sync" type="button">Cerrar</button>
+                <button class="btn ghost" id="save-sync-config" type="button">Guardar configuración</button>
+                <button class="btn primary" id="run-sync" type="button">Sincronizar ahora</button>
+            </div>
+        </div>
+    </div>
 EOF
 
     if [[ -n "${safe_json}" ]]; then
@@ -130,6 +203,7 @@ EOF
     fi
 
     cat <<'EOF'
+    <script src="/assets/billing.js"></script>
     <script src="/assets/app.js"></script>
 </body>
 </html>

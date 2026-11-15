@@ -1,0 +1,44 @@
+<section class="manager">
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Datos comerciales</span>
+                <h3>Información del negocio</h3>
+            </div>
+            <span class="badge badge-soft" data-business-state>Cargando…</span>
+        </header>
+        <p class="form-note">Esta información se imprime en los comprobantes de compras y pedidos. Los cambios se guardan en la base local y se incluyen en la próxima sincronización.</p>
+        <form class="form-stack" data-business-form>
+            <div class="form-grid">
+                <label class="field span-2">
+                    <span>Nombre del negocio</span>
+                    <input type="text" data-business-name maxlength="100" required>
+                </label>
+                <label class="field">
+                    <span>Instagram</span>
+                    <input type="text" data-business-instagram maxlength="150" placeholder="@aurea.destileria">
+                </label>
+                <label class="field">
+                    <span>Facebook</span>
+                    <input type="text" data-business-facebook maxlength="150" placeholder="facebook.com/aurea">
+                </label>
+                <label class="field">
+                    <span>Teléfono</span>
+                    <input type="text" data-business-phone maxlength="40" placeholder="+54 11 5555-5555">
+                </label>
+                <label class="field">
+                    <span>Email</span>
+                    <input type="email" data-business-email maxlength="100" placeholder="ventas@aurea.com">
+                </label>
+                <label class="field span-2">
+                    <span>Sitio web</span>
+                    <input type="text" data-business-website maxlength="150" placeholder="https://aurea.com">
+                </label>
+            </div>
+            <p class="form-error" data-business-error hidden></p>
+            <div class="form-actions">
+                <button class="btn primary" type="submit" data-business-submit>Guardar información</button>
+            </div>
+        </form>
+    </article>
+</section>

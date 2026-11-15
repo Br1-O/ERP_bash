@@ -12,7 +12,7 @@ declare -g _ERP_DB_SINGLETON_LOADED=1
 
 ERP_ROOT_DIR="${ERP_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ERP_DB_PATH="${ERP_DB_PATH:-${ERP_ROOT_DIR}/shared/data/erp_licores.db}"
-ERP_SCHEMA_VERSION="${ERP_SCHEMA_VERSION:-2}"
+ERP_SCHEMA_VERSION="${ERP_SCHEMA_VERSION:-5}"
 
 declare -g DB_SINGLETON_PID=""
 declare -g DB_SINGLETON_IN_FD=""
@@ -22,7 +22,7 @@ declare -g DB_LAST_ERROR=""
 db_sqlite_available() {
     [[ -n "${ERP_SQLITE_BIN:-}" ]] && return 0
     command -v sqlite3 >/dev/null 2>&1 && return 0
-    command -v python3 >/dev/null 2>&1 && [[ -f "${ERP_ROOT_DIR}/tools/sqlite3_shim.py" ]] && return 0
+    command -v node >/dev/null 2>&1 && [[ -f "${ERP_ROOT_DIR}/tools/sqlite3_shim.js" ]] && return 0
     return 1
 }
 
@@ -40,10 +40,10 @@ db_open() {
         read -r -a sqlite_cmd <<< "${ERP_SQLITE_BIN}"
     elif command -v sqlite3 >/dev/null 2>&1; then
         sqlite_cmd=(sqlite3)
-    elif command -v python3 >/dev/null 2>&1 && [[ -f "${ERP_ROOT_DIR}/tools/sqlite3_shim.py" ]]; then
-        sqlite_cmd=(python3 "${ERP_ROOT_DIR}/tools/sqlite3_shim.py")
+    elif command -v node >/dev/null 2>&1 && [[ -f "${ERP_ROOT_DIR}/tools/sqlite3_shim.js" ]]; then
+        sqlite_cmd=(node --no-warnings "${ERP_ROOT_DIR}/tools/sqlite3_shim.js")
     else
-        DB_LAST_ERROR="sqlite3 no está instalado."
+        DB_LAST_ERROR="sqlite3 no está instalado (se requiere sqlite3 o Node.js con node:sqlite)."
         return 1
     fi
 
@@ -62,7 +62,7 @@ db_open() {
         return 1
     fi
 
-    if ! _db_send "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;" >/dev/null; then
+    if ! _db_send "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;" >/dev/null; then
         DB_LAST_ERROR="No se pudieron configurar los PRAGMA de SQLite."
         return 1
     fi

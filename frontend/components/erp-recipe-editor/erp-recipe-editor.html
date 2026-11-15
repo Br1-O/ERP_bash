@@ -1,0 +1,27 @@
+<div class="recipe-editor">
+    <div class="recipe-head">
+        <div>
+            <strong>Receta por unidad</strong>
+            <small>Cantidad de cada insumo necesaria para producir una unidad.</small>
+        </div>
+        <button class="btn ghost small" type="button" data-add-recipe-row>+ Insumo</button>
+    </div>
+    <div class="recipe-rows" data-recipe-rows></div>
+    <div class="recipe-empty" data-recipe-empty>Sin insumos asociados. Agregue al menos uno para consumir stock automáticamente.</div>
+
+    <details class="recipe-quick">
+        <summary>Crear insumo nuevo sin salir del formulario</summary>
+        <div class="quick-grid">
+            <label class="field"><span>Nombre</span><input type="text" data-quick-name maxlength="80" placeholder="Ej. Extracto de vainilla"></label>
+            <label class="field"><span>Categoría</span><select data-quick-category></select></label>
+            <label class="field"><span>Proveedor</span><select data-quick-supplier></select></label>
+            <label class="field"><span>Unidad</span><input type="text" data-quick-unit maxlength="30" value="unidades"></label>
+            <label class="field"><span>Costo unitario</span><input type="number" min="0" step="0.01" data-quick-cost value="0"></label>
+            <label class="field"><span>Stock inicial</span><input type="number" min="0" step="0.01" data-quick-stock value="0"></label>
+        </div>
+        <div class="recipe-quick-actions">
+            <button class="btn primary small" type="button" data-quick-save>Crear y agregar a la receta</button>
+            <span class="form-error" data-quick-error hidden></span>
+        </div>
+    </details>
+</div>

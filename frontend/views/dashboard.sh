@@ -339,6 +339,18 @@ view_dashboard_page() {
                                         <option value="Tarjeta">Tarjeta</option>
                                     </select>
                                 </label>
+                                <label class="field">
+                                    <span>Descuento</span>
+                                    <select id="sale-discount-type">
+                                        <option value="none">Sin descuento</option>
+                                        <option value="percent">Porcentaje</option>
+                                        <option value="fixed">Monto fijo</option>
+                                    </select>
+                                </label>
+                                <label class="field" id="sale-discount-value-field" hidden>
+                                    <span id="sale-discount-value-label">Valor del descuento</span>
+                                    <input type="number" id="sale-discount-value" min="0" step="0.01" value="0">
+                                </label>
                             </div>
 
                             <div class="sale-items-head">
@@ -348,8 +360,18 @@ view_dashboard_page() {
                             <div class="sale-items" id="sale-items"></div>
 
                             <div class="sale-total">
-                                <span>Total estimado</span>
-                                <strong id="sale-total">$0.00</strong>
+                                <div class="sale-total-row">
+                                    <span>Subtotal</span>
+                                    <strong id="sale-subtotal">$0.00</strong>
+                                </div>
+                                <div class="sale-total-row" id="sale-discount-row" hidden>
+                                    <span id="sale-discount-label">Descuento</span>
+                                    <strong id="sale-discount">-$0.00</strong>
+                                </div>
+                                <div class="sale-total-row sale-total-final">
+                                    <span>Total estimado</span>
+                                    <strong id="sale-total">$0.00</strong>
+                                </div>
                             </div>
                             <p class="form-error" id="sale-error" hidden></p>
                         </div>

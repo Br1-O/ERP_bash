@@ -6,8 +6,75 @@
 [[ -n "${_ERP_SCHEMA_LOADED:-}" ]] && return 0
 declare -g _ERP_SCHEMA_LOADED=1
 
+_schema_migrate_legacy_columns() {
+    local table_exists has_column
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Inputs';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Inputs') WHERE name = 'active';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Inputs ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Products';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Products') WHERE name = 'recipe_description';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Products ADD COLUMN recipe_description TEXT NOT NULL DEFAULT '';" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Products') WHERE name = 'is_combo';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Products ADD COLUMN is_combo INTEGER NOT NULL DEFAULT 0 CHECK (is_combo IN (0, 1));" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Sales';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'subtotal_amount';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN subtotal_amount REAL NOT NULL DEFAULT 0;" || return 1
+            db_exec "UPDATE Sales SET subtotal_amount = total_amount WHERE total_amount > 0;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'discount_type';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN discount_type TEXT NOT NULL DEFAULT 'none';" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'discount_value';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN discount_value REAL NOT NULL DEFAULT 0;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'discount_amount';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'status';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN status TEXT NOT NULL DEFAULT 'finished' CHECK (status IN ('pending', 'finished', 'cancel'));" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'notes';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN notes TEXT;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'created_by';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN created_by TEXT NOT NULL DEFAULT 'sistema';" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'stock_applied';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN stock_applied INTEGER NOT NULL DEFAULT 0 CHECK (stock_applied IN (0, 1));" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'order_type';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN order_type TEXT NOT NULL DEFAULT 'direct' CHECK (order_type IN ('direct', 'order'));" || return 1
+        fi
+        db_exec "UPDATE Sales SET stock_applied = 1 WHERE status = 'finished';" || return 1
+    fi
+    return 0
+}
+
 db_apply_schema() {
     local sql
+    _schema_migrate_legacy_columns || return 1
     sql=$(cat <<'SQL'
 CREATE TABLE IF NOT EXISTS Categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +106,8 @@ CREATE TABLE IF NOT EXISTS Inputs (
     unit TEXT NOT NULL DEFAULT 'unidades',
     cost REAL NOT NULL DEFAULT 0 CHECK (cost >= 0),
     supplier_id INTEGER REFERENCES Suppliers(id),
-    min_stock_threshold REAL NOT NULL DEFAULT 0 CHECK (min_stock_threshold >= 0)
+    min_stock_threshold REAL NOT NULL DEFAULT 0 CHECK (min_stock_threshold >= 0),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS Products (
@@ -51,15 +119,26 @@ CREATE TABLE IF NOT EXISTS Products (
     cost REAL NOT NULL DEFAULT 0 CHECK (cost >= 0),
     price REAL NOT NULL DEFAULT 0 CHECK (price >= 0),
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
-    is_seasonal INTEGER NOT NULL DEFAULT 0 CHECK (is_seasonal IN (0, 1))
+    is_seasonal INTEGER NOT NULL DEFAULT 0 CHECK (is_seasonal IN (0, 1)),
+    recipe_description TEXT NOT NULL DEFAULT '' CHECK (length(recipe_description) <= 2000),
+    is_combo INTEGER NOT NULL DEFAULT 0 CHECK (is_combo IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS Sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     customer_id INTEGER REFERENCES Customers(id),
+    subtotal_amount REAL NOT NULL DEFAULT 0 CHECK (subtotal_amount >= 0),
+    discount_type TEXT NOT NULL DEFAULT 'none',
+    discount_value REAL NOT NULL DEFAULT 0 CHECK (discount_value >= 0),
+    discount_amount REAL NOT NULL DEFAULT 0 CHECK (discount_amount >= 0),
     total_amount REAL NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
-    payment_method TEXT NOT NULL DEFAULT 'Efectivo'
+    payment_method TEXT NOT NULL DEFAULT 'Efectivo',
+    status TEXT NOT NULL DEFAULT 'finished' CHECK (status IN ('pending', 'finished', 'cancel')),
+    notes TEXT,
+    created_by TEXT NOT NULL DEFAULT 'sistema',
+    stock_applied INTEGER NOT NULL DEFAULT 0 CHECK (stock_applied IN (0, 1)),
+    order_type TEXT NOT NULL DEFAULT 'direct' CHECK (order_type IN ('direct', 'order'))
 );
 
 CREATE TABLE IF NOT EXISTS SaleItems (
@@ -103,6 +182,63 @@ CREATE TABLE IF NOT EXISTS TastingFeedback (
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS ProductRecipe (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES Products(id) ON DELETE CASCADE,
+    input_id INTEGER NOT NULL REFERENCES Inputs(id),
+    quantity_per_unit REAL NOT NULL CHECK (quantity_per_unit > 0),
+    UNIQUE (product_id, input_id)
+);
+
+CREATE TABLE IF NOT EXISTS ProductRecipeStep (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES Products(id) ON DELETE CASCADE,
+    step_number INTEGER NOT NULL CHECK (step_number > 0),
+    instruction TEXT NOT NULL CHECK (length(instruction) BETWEEN 1 AND 500),
+    UNIQUE (product_id, step_number)
+);
+
+CREATE TABLE IF NOT EXISTS ComboItems (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    combo_product_id INTEGER NOT NULL REFERENCES Products(id) ON DELETE CASCADE,
+    component_product_id INTEGER NOT NULL REFERENCES Products(id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    UNIQUE (combo_product_id, component_product_id),
+    CHECK (combo_product_id <> component_product_id)
+);
+
+CREATE TABLE IF NOT EXISTS BusinessInfo (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 100),
+    instagram TEXT NOT NULL DEFAULT '' CHECK (length(instagram) <= 150),
+    facebook TEXT NOT NULL DEFAULT '' CHECK (length(facebook) <= 150),
+    phone TEXT NOT NULL DEFAULT '' CHECK (length(phone) <= 40),
+    email TEXT NOT NULL DEFAULT '' CHECK (length(email) <= 100),
+    website TEXT NOT NULL DEFAULT '' CHECK (length(website) <= 150),
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO BusinessInfo (id, name, instagram, facebook, phone, email, website)
+VALUES (1, 'Aurea Destilería Artesanal', '', '', '', '', '');
+
+CREATE TABLE IF NOT EXISTS Purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    supplier_id INTEGER REFERENCES Suppliers(id),
+    total_amount REAL NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'Recibida',
+    created_by TEXT NOT NULL DEFAULT 'sistema'
+);
+
+CREATE TABLE IF NOT EXISTS PurchaseItems (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_id INTEGER NOT NULL REFERENCES Purchases(id) ON DELETE CASCADE,
+    input_id INTEGER NOT NULL REFERENCES Inputs(id),
+    quantity REAL NOT NULL CHECK (quantity > 0),
+    unit_cost REAL NOT NULL CHECK (unit_cost >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS Users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL CHECK (length(username) <= 50),
@@ -123,12 +259,32 @@ CREATE TABLE IF NOT EXISTS AppContext (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS SyncLog (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL,
+    endpoint TEXT,
+    message TEXT,
+    payload_bytes INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_sales_timestamp ON Sales(timestamp);
 CREATE INDEX IF NOT EXISTS idx_saleitems_sale ON SaleItems(sale_id);
 CREATE INDEX IF NOT EXISTS idx_saleitems_product ON SaleItems(product_id);
 CREATE INDEX IF NOT EXISTS idx_journal_timestamp ON InventoryJournal(timestamp);
 CREATE INDEX IF NOT EXISTS idx_production_timestamp ON ProductionBatches(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tasting_product ON TastingFeedback(product_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_product ON ProductRecipe(product_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_input ON ProductRecipe(input_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_steps_product ON ProductRecipeStep(product_id);
+CREATE INDEX IF NOT EXISTS idx_combo_combo ON ComboItems(combo_product_id);
+CREATE INDEX IF NOT EXISTS idx_combo_component ON ComboItems(component_product_id);
+CREATE INDEX IF NOT EXISTS idx_sales_status ON Sales(status);
+CREATE INDEX IF NOT EXISTS idx_sales_order_type_status ON Sales(order_type, status);
+CREATE INDEX IF NOT EXISTS idx_purchases_timestamp ON Purchases(timestamp);
+CREATE INDEX IF NOT EXISTS idx_purchaseitems_purchase ON PurchaseItems(purchase_id);
+CREATE INDEX IF NOT EXISTS idx_purchaseitems_input ON PurchaseItems(input_id);
+CREATE INDEX IF NOT EXISTS idx_synclog_timestamp ON SyncLog(timestamp);
 
 DROP TRIGGER IF EXISTS trg_products_ai;
 DROP TRIGGER IF EXISTS trg_products_au;
@@ -144,12 +300,30 @@ DROP TRIGGER IF EXISTS trg_suppliers_au;
 DROP TRIGGER IF EXISTS trg_suppliers_ad;
 DROP TRIGGER IF EXISTS trg_sales_ai;
 DROP TRIGGER IF EXISTS trg_sales_au;
+DROP TRIGGER IF EXISTS trg_sales_status_finish_bi;
+DROP TRIGGER IF EXISTS trg_sales_status_finish_af;
+DROP TRIGGER IF EXISTS trg_sales_status_unapply_af;
 DROP TRIGGER IF EXISTS trg_saleitems_stock;
 DROP TRIGGER IF EXISTS trg_saleitems_after_insert;
 DROP TRIGGER IF EXISTS trg_saleitems_after_delete;
 DROP TRIGGER IF EXISTS trg_batches_after_insert;
 DROP TRIGGER IF EXISTS trg_batchinput_stock;
 DROP TRIGGER IF EXISTS trg_batchinput_after_insert;
+DROP TRIGGER IF EXISTS trg_purchases_ai;
+DROP TRIGGER IF EXISTS trg_purchases_au;
+DROP TRIGGER IF EXISTS trg_purchases_ad;
+DROP TRIGGER IF EXISTS trg_purchaseitems_stock;
+DROP TRIGGER IF EXISTS trg_purchaseitems_ai;
+DROP TRIGGER IF EXISTS trg_purchaseitems_ad;
+DROP TRIGGER IF EXISTS trg_recipe_ai;
+DROP TRIGGER IF EXISTS trg_recipe_au;
+DROP TRIGGER IF EXISTS trg_recipe_ad;
+DROP TRIGGER IF EXISTS trg_recipe_step_ai;
+DROP TRIGGER IF EXISTS trg_recipe_step_au;
+DROP TRIGGER IF EXISTS trg_recipe_step_ad;
+DROP TRIGGER IF EXISTS trg_combo_ai;
+DROP TRIGGER IF EXISTS trg_combo_au;
+DROP TRIGGER IF EXISTS trg_combo_ad;
 
 CREATE TRIGGER trg_products_ai AFTER INSERT ON Products
 BEGIN
@@ -247,7 +421,8 @@ CREATE TRIGGER trg_sales_ai AFTER INSERT ON Sales
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'SALE_CREATED', 'Sales', 'sale_id=' || NEW.id || ';total=' || NEW.total_amount || ';payment=' || NEW.payment_method,
+            'SALE_CREATED', 'Sales',
+            'sale_id=' || NEW.id || ';total=' || NEW.total_amount || ';status=' || NEW.status || ';payment=' || NEW.payment_method,
             'DONE');
 END;
 
@@ -260,35 +435,219 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_saleitems_stock BEFORE INSERT ON SaleItems
+WHEN (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished'
 BEGIN
     SELECT RAISE(ABORT, 'Stock insuficiente para el producto seleccionado')
-    WHERE (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id) < NEW.quantity;
+    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+      AND (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id) < NEW.quantity;
+
+    SELECT RAISE(ABORT, 'El combo no tiene componentes activos')
+    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
+      AND NOT EXISTS (
+          SELECT 1 FROM ComboItems ci
+          JOIN Products cp ON cp.id = ci.component_product_id
+          WHERE ci.combo_product_id = NEW.product_id AND cp.active = 1
+      );
+
+    SELECT RAISE(ABORT, 'Stock insuficiente de componentes para el combo')
+    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
+      AND EXISTS (
+          SELECT 1 FROM ComboItems ci
+          JOIN Products cp ON cp.id = ci.component_product_id
+          WHERE ci.combo_product_id = NEW.product_id
+            AND (cp.active = 0 OR cp.stock < NEW.quantity * ci.quantity)
+      );
 END;
 
 CREATE TRIGGER trg_saleitems_after_insert AFTER INSERT ON SaleItems
 BEGIN
-    UPDATE Products SET stock = stock - NEW.quantity WHERE id = NEW.product_id;
-    UPDATE Sales SET total_amount = (
-        SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = NEW.sale_id
-    ) WHERE id = NEW.sale_id;
+    UPDATE Products
+       SET stock = stock - NEW.quantity
+     WHERE id = NEW.product_id
+       AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+       AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
+
+    UPDATE Products
+       SET stock = stock - (NEW.quantity * (
+               SELECT ci.quantity FROM ComboItems ci
+               WHERE ci.combo_product_id = NEW.product_id
+                 AND ci.component_product_id = Products.id
+           ))
+     WHERE id IN (
+           SELECT component_product_id FROM ComboItems
+           WHERE combo_product_id = NEW.product_id
+       )
+       AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
+
+    UPDATE Sales SET
+        subtotal_amount = (
+            SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = NEW.sale_id
+        ),
+        total_amount = MAX(0, (
+            SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = NEW.sale_id
+        ) - discount_amount),
+        stock_applied = CASE WHEN status = 'finished' THEN 1 ELSE stock_applied END
+    WHERE id = NEW.sale_id;
+
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'SALE_STOCK_OUT', 'SaleItems',
+            CASE WHEN (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished'
+                 THEN 'SALE_STOCK_OUT' ELSE 'ORDER_ITEM_ADDED' END,
+            'SaleItems',
             'sale_id=' || NEW.sale_id || ';product_id=' || NEW.product_id || ';qty=' || NEW.quantity || ';unit_price=' || NEW.unit_price,
             'DONE');
 END;
 
 CREATE TRIGGER trg_saleitems_after_delete AFTER DELETE ON SaleItems
 BEGIN
-    UPDATE Products SET stock = stock + OLD.quantity WHERE id = OLD.product_id;
-    UPDATE Sales SET total_amount = (
-        SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = OLD.sale_id
-    ) WHERE id = OLD.sale_id;
+    UPDATE Products
+       SET stock = stock + OLD.quantity
+     WHERE id = OLD.product_id
+       AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = OLD.product_id) = 0
+       AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
+
+    UPDATE Products
+       SET stock = stock + (OLD.quantity * (
+               SELECT ci.quantity FROM ComboItems ci
+               WHERE ci.combo_product_id = OLD.product_id
+                 AND ci.component_product_id = Products.id
+           ))
+     WHERE id IN (
+           SELECT component_product_id FROM ComboItems
+           WHERE combo_product_id = OLD.product_id
+       )
+       AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
+
+    UPDATE Sales SET
+        subtotal_amount = (
+            SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = OLD.sale_id
+        ),
+        total_amount = MAX(0, (
+            SELECT COALESCE(SUM(quantity * unit_price), 0) FROM SaleItems WHERE sale_id = OLD.sale_id
+        ) - discount_amount)
+    WHERE id = OLD.sale_id;
+
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'SALE_ITEM_DELETED', 'SaleItems',
             'sale_id=' || OLD.sale_id || ';product_id=' || OLD.product_id || ';qty=' || OLD.quantity,
             'DONE');
+END;
+
+CREATE TRIGGER trg_sales_status_finish_bi BEFORE UPDATE OF status ON Sales
+WHEN NEW.status = 'finished' AND OLD.status <> 'finished' AND COALESCE(NEW.stock_applied, 0) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'El pedido no tiene productos para finalizar')
+    WHERE NOT EXISTS (SELECT 1 FROM SaleItems WHERE sale_id = NEW.id);
+
+    SELECT RAISE(ABORT, 'El pedido contiene un combo sin componentes activos')
+    WHERE EXISTS (
+        SELECT 1 FROM SaleItems si
+        JOIN Products p ON p.id = si.product_id
+        WHERE si.sale_id = NEW.id AND p.is_combo = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM ComboItems ci
+              JOIN Products cp ON cp.id = ci.component_product_id
+              WHERE ci.combo_product_id = p.id AND cp.active = 1
+          )
+    );
+
+    SELECT RAISE(ABORT, 'Stock insuficiente para finalizar el pedido')
+    WHERE EXISTS (
+        SELECT 1
+        FROM (
+            SELECT pid, SUM(needed) AS total
+            FROM (
+                SELECT si.product_id AS pid, si.quantity AS needed
+                FROM SaleItems si
+                JOIN Products p ON p.id = si.product_id
+                WHERE si.sale_id = NEW.id AND p.is_combo = 0
+                UNION ALL
+                SELECT ci.component_product_id AS pid, si.quantity * ci.quantity AS needed
+                FROM SaleItems si
+                JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+                WHERE si.sale_id = NEW.id
+            ) parts
+            GROUP BY pid
+        ) needs
+        JOIN Products p ON p.id = needs.pid
+        WHERE p.active = 0 OR p.stock < needs.total
+    );
+END;
+
+CREATE TRIGGER trg_sales_status_finish_af AFTER UPDATE OF status ON Sales
+WHEN NEW.status = 'finished' AND OLD.status <> 'finished' AND COALESCE(NEW.stock_applied, 0) = 0
+BEGIN
+    UPDATE Products
+       SET stock = stock - (
+           SELECT COALESCE(SUM(si.quantity), 0)
+           FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0 AND si.product_id = Products.id
+       )
+     WHERE id IN (
+           SELECT si.product_id FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+       );
+
+    UPDATE Products
+       SET stock = stock - (
+           SELECT COALESCE(SUM(si.quantity * ci.quantity), 0)
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id AND ci.component_product_id = Products.id
+       )
+     WHERE id IN (
+           SELECT ci.component_product_id
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+       );
+
+    UPDATE Sales SET stock_applied = 1 WHERE id = NEW.id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'ORDER_FINISHED', 'Sales', 'sale_id=' || NEW.id || ';total=' || NEW.total_amount, 'DONE');
+END;
+
+CREATE TRIGGER trg_sales_status_unapply_af AFTER UPDATE OF status ON Sales
+WHEN NEW.status <> 'finished' AND OLD.status = 'finished' AND OLD.stock_applied = 1
+BEGIN
+    UPDATE Products
+       SET stock = stock + (
+           SELECT COALESCE(SUM(si.quantity), 0)
+           FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0 AND si.product_id = Products.id
+       )
+     WHERE id IN (
+           SELECT si.product_id FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+       );
+
+    UPDATE Products
+       SET stock = stock + (
+           SELECT COALESCE(SUM(si.quantity * ci.quantity), 0)
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id AND ci.component_product_id = Products.id
+       )
+     WHERE id IN (
+           SELECT ci.component_product_id
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+       );
+
+    UPDATE Sales SET stock_applied = 0 WHERE id = NEW.id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            CASE WHEN NEW.status = 'cancel' THEN 'ORDER_CANCELLED' ELSE 'ORDER_REOPENED' END,
+            'Sales', 'sale_id=' || NEW.id || ';status=' || NEW.status, 'DONE');
 END;
 
 CREATE TRIGGER trg_batches_after_insert AFTER INSERT ON ProductionBatches
@@ -314,6 +673,152 @@ BEGIN
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'INPUT_CONSUMPTION', 'ProductionInputs',
             'batch_id=' || NEW.batch_id || ';input_id=' || NEW.input_id || ';qty=' || NEW.quantity,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchases_ai AFTER INSERT ON Purchases
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_CREATED', 'Purchases',
+            'purchase_id=' || NEW.id || ';supplier_id=' || COALESCE(NEW.supplier_id, 0) || ';status=' || NEW.status,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchases_au AFTER UPDATE ON Purchases
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_UPDATED', 'Purchases',
+            'purchase_id=' || NEW.id || ';total=' || OLD.total_amount || '->' || NEW.total_amount,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchases_ad AFTER DELETE ON Purchases
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_DELETED', 'Purchases',
+            'purchase_id=' || OLD.id || ';supplier_id=' || COALESCE(OLD.supplier_id, 0),
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchaseitems_stock BEFORE INSERT ON PurchaseItems
+BEGIN
+    SELECT RAISE(ABORT, 'El insumo no existe o está inactivo')
+    WHERE (SELECT COALESCE(active, 0) FROM Inputs WHERE id = NEW.input_id) = 0;
+END;
+
+CREATE TRIGGER trg_purchaseitems_ai AFTER INSERT ON PurchaseItems
+BEGIN
+    UPDATE Inputs
+       SET stock = stock + NEW.quantity,
+           cost = NEW.unit_cost
+     WHERE id = NEW.input_id;
+    UPDATE Purchases
+       SET total_amount = (
+           SELECT COALESCE(SUM(quantity * unit_cost), 0)
+             FROM PurchaseItems WHERE purchase_id = NEW.purchase_id
+       )
+     WHERE id = NEW.purchase_id;
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_RECEIVED', 'PurchaseItems',
+            'purchase_id=' || NEW.purchase_id || ';input_id=' || NEW.input_id || ';qty=' || NEW.quantity || ';unit_cost=' || NEW.unit_cost,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchaseitems_ad AFTER DELETE ON PurchaseItems
+BEGIN
+    UPDATE Inputs SET stock = stock - OLD.quantity WHERE id = OLD.input_id;
+    UPDATE Purchases
+       SET total_amount = (
+           SELECT COALESCE(SUM(quantity * unit_cost), 0)
+             FROM PurchaseItems WHERE purchase_id = OLD.purchase_id
+       )
+     WHERE id = OLD.purchase_id;
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_ITEM_DELETED', 'PurchaseItems',
+            'purchase_id=' || OLD.purchase_id || ';input_id=' || OLD.input_id || ';qty=' || OLD.quantity,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_ai AFTER INSERT ON ProductRecipe
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_ADD', 'ProductRecipe',
+            'product_id=' || NEW.product_id || ';input_id=' || NEW.input_id || ';qty_per_unit=' || NEW.quantity_per_unit,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_au AFTER UPDATE ON ProductRecipe
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_UPDATE', 'ProductRecipe',
+            'product_id=' || NEW.product_id || ';input_id=' || NEW.input_id || ';qty=' || OLD.quantity_per_unit || '->' || NEW.quantity_per_unit,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_ad AFTER DELETE ON ProductRecipe
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_REMOVE', 'ProductRecipe',
+            'product_id=' || OLD.product_id || ';input_id=' || OLD.input_id,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_step_ai AFTER INSERT ON ProductRecipeStep
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_STEP_ADD', 'ProductRecipeStep',
+            'product_id=' || NEW.product_id || ';step=' || NEW.step_number, 'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_step_au AFTER UPDATE ON ProductRecipeStep
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_STEP_UPDATE', 'ProductRecipeStep',
+            'product_id=' || NEW.product_id || ';step=' || NEW.step_number, 'DONE');
+END;
+
+CREATE TRIGGER trg_recipe_step_ad AFTER DELETE ON ProductRecipeStep
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'RECIPE_STEP_REMOVE', 'ProductRecipeStep',
+            'product_id=' || OLD.product_id || ';step=' || OLD.step_number, 'DONE');
+END;
+
+CREATE TRIGGER trg_combo_ai AFTER INSERT ON ComboItems
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'COMBO_ADD', 'ComboItems',
+            'combo_id=' || NEW.combo_product_id || ';component_id=' || NEW.component_product_id || ';qty=' || NEW.quantity,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_combo_au AFTER UPDATE ON ComboItems
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'COMBO_UPDATE', 'ComboItems',
+            'combo_id=' || NEW.combo_product_id || ';component_id=' || NEW.component_product_id || ';qty=' || OLD.quantity || '->' || NEW.quantity,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_combo_ad AFTER DELETE ON ComboItems
+BEGIN
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'COMBO_REMOVE', 'ComboItems',
+            'combo_id=' || OLD.combo_product_id || ';component_id=' || OLD.component_product_id,
             'DONE');
 END;
 SQL
@@ -544,6 +1049,30 @@ FROM (
     )
     SELECT n FROM t
 );
+
+INSERT INTO ProductRecipe (product_id, input_id, quantity_per_unit) VALUES
+    (1, 1, 0.350), (1, 4, 0.070), (1, 5, 1), (1, 6, 1), (1, 7, 1),
+    (2, 1, 0.250), (2, 2, 0.350), (2, 5, 1), (2, 7, 1),
+    (3, 3, 0.320), (3, 9, 0.250), (3, 5, 1), (3, 6, 1),
+    (4, 3, 0.300), (4, 4, 0.030), (4, 9, 0.220), (4, 5, 1), (4, 7, 1),
+    (5, 1, 0.450), (5, 8, 0.200), (5, 5, 1), (5, 6, 1),
+    (6, 1, 0.340), (6, 4, 0.050), (6, 10, 0.010), (6, 5, 1), (6, 7, 1),
+    (7, 1, 0.220), (7, 3, 0.100), (7, 5, 1), (7, 7, 1),
+    (8, 1, 0.400), (8, 8, 0.250), (8, 5, 1), (8, 6, 1),
+    (9, 1, 0.330), (9, 4, 0.060), (9, 5, 1), (9, 7, 1),
+    (10, 3, 0.040), (10, 8, 0.700), (10, 10, 0.020), (10, 5, 1), (10, 7, 1);
+
+INSERT INTO Purchases (id, timestamp, supplier_id, total_amount, notes, status, created_by) VALUES
+    (1, datetime('now', '-30 days'), 2, 0, 'Reposición de alcohol y agua mineral', 'Recibida', 'admin'),
+    (2, datetime('now', '-18 days'), 1, 0, 'Frutos rojos y botánicos de temporada', 'Recibida', 'admin'),
+    (3, datetime('now', '-9 days'), 4, 0, 'Envases y etiquetas para fin de mes', 'Recibida', 'cajero'),
+    (4, datetime('now', '-3 days'), 3, 0, 'Miel y levadura para hidromiel', 'Recibida', 'admin');
+
+INSERT INTO PurchaseItems (purchase_id, input_id, quantity, unit_cost) VALUES
+    (1, 1, 20, 9.50), (1, 8, 50, 0.15), (1, 10, 2, 3.60),
+    (2, 2, 15, 4.20), (2, 4, 5, 11.50), (2, 8, 20, 0.15),
+    (3, 5, 100, 1.20), (3, 6, 200, 0.25), (3, 7, 100, 0.35),
+    (4, 3, 20, 6.80), (4, 9, 10, 2.40);
 
 UPDATE Products SET stock = 28 WHERE id = 1;
 UPDATE Products SET stock = 42 WHERE id = 2;

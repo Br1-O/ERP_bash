@@ -1,0 +1,139 @@
+.invoice-preview {
+    min-height: 240px;
+}
+
+.invoice-sheet {
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+}
+
+.invoice-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    padding-bottom: 14px;
+    border-bottom: 2px solid var(--accent);
+}
+
+.invoice-header h3 {
+    margin: 2px 0 6px;
+    font-size: 1.25rem;
+}
+
+.invoice-header p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    line-height: 1.5;
+}
+
+.invoice-header p span + span::before {
+    content: ' · ';
+}
+
+.invoice-number {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    text-align: right;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+}
+
+.invoice-number strong {
+    color: var(--text);
+    font-size: 1rem;
+}
+
+.invoice-party {
+    margin: 14px 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--surface-muted);
+}
+
+.invoice-party span {
+    display: block;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.invoice-party strong {
+    display: block;
+    margin: 2px 0;
+    font-size: 0.9rem;
+}
+
+.invoice-party small {
+    color: var(--text-soft);
+    font-size: 0.72rem;
+}
+
+.invoice-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.76rem;
+}
+
+.invoice-table th,
+.invoice-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+}
+
+.invoice-table th:nth-child(2),
+.invoice-table td:nth-child(2),
+.invoice-table th:nth-child(3),
+.invoice-table td:nth-child(3),
+.invoice-table th:nth-child(4),
+.invoice-table td:nth-child(4) {
+    text-align: right;
+}
+
+.invoice-totals {
+    width: min(260px, 100%);
+    margin: 14px 0 0 auto;
+}
+
+.invoice-total {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+    font-size: 0.78rem;
+}
+
+.invoice-total.grand {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.95rem;
+}
+
+.invoice-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 22px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+
+@media (max-width: 640px) {
+    .invoice-header {
+        flex-direction: column;
+    }
+
+    .invoice-number {
+        align-items: flex-start;
+        text-align: left;
+    }
+}

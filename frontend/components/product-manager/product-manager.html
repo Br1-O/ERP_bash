@@ -1,0 +1,145 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <div class="manager-filters">
+            <label class="search-field">
+                <span>Buscar producto</span>
+                <input type="search" data-product-search placeholder="Nombre o categoría…">
+            </label>
+            <label class="field compact-field">
+                <span>Categoría</span>
+                <select data-product-category><option value="0">Todas</option></select>
+            </label>
+            <label class="field compact-field">
+                <span>Estado</span>
+                <select data-product-state>
+                    <option value="active">Activos</option>
+                    <option value="low">Stock bajo</option>
+                    <option value="inactive">Inactivos</option>
+                    <option value="all">Todos</option>
+                </select>
+            </label>
+        </div>
+        <button class="btn primary" type="button" data-create-product>+ Nuevo producto</button>
+    </div>
+
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Productos terminados</span>
+                <h3>Catálogo, stock y recetas</h3>
+            </div>
+            <span class="badge badge-soft" data-product-count>0 productos</span>
+        </header>
+        <div class="product-grid" data-product-grid></div>
+        <div class="empty-state" data-product-empty hidden>
+            <strong>No hay productos para mostrar</strong>
+            <span>Ajuste los filtros o cree un producto nuevo.</span>
+        </div>
+        <erp-pagination data-product-pagination></erp-pagination>
+    </article>
+</section>
+
+<erp-modal id="product-modal" title="Producto" size="wide">
+    <form class="form-stack" data-product-form>
+        <div class="form-grid">
+            <label class="field span-2">
+                <span>Nombre</span>
+                <input type="text" data-product-name maxlength="80" required>
+            </label>
+            <label class="field">
+                <span>Categoría</span>
+                <select data-product-form-category required></select>
+            </label>
+            <label class="field" data-product-stock-field>
+                <span>Stock inicial</span>
+                <input type="number" min="0" step="1" data-product-stock value="0">
+            </label>
+            <label class="field">
+                <span>Costo unitario</span>
+                <input type="number" min="0" step="0.01" data-product-cost value="0">
+            </label>
+            <label class="field">
+                <span>Precio de venta</span>
+                <input type="number" min="0" step="0.01" data-product-price value="0">
+            </label>
+            <label class="field">
+                <span>Umbral mínimo</span>
+                <input type="number" min="0" step="1" data-product-threshold value="0">
+            </label>
+            <label class="field checkbox-field">
+                <span>Estacional</span>
+                <input type="checkbox" data-product-seasonal>
+            </label>
+            <label class="field checkbox-field" data-product-active-field hidden>
+                <span>Producto activo</span>
+                <input type="checkbox" data-product-active checked>
+            </label>
+            <label class="field checkbox-field" data-product-consume-field>
+                <span>Descontar insumos del stock inicial</span>
+                <input type="checkbox" data-product-consume>
+            </label>
+            <label class="field checkbox-field">
+                <span>Es un combo</span>
+                <input type="checkbox" data-product-combo>
+            </label>
+        </div>
+        <div class="product-recipe-fields" data-product-recipe-fields>
+            <label class="field">
+                <span>Descripción de la receta</span>
+                <textarea data-product-recipe-description rows="3" maxlength="2000"
+                          placeholder="Notas de elaboración, origen de los insumos, cuidados especiales…"></textarea>
+            </label>
+            <label class="field">
+                <span>Pasos de preparación <small class="muted">(uno por línea)</small></span>
+                <textarea data-product-steps rows="5" placeholder="1. Macerar los frutos rojos&#10;2. Reposar 30 días&#10;3. Filtrar y embotellar"></textarea>
+            </label>
+            <erp-recipe-editor id="product-recipe-editor"></erp-recipe-editor>
+        </div>
+        <div class="combo-editor" data-product-combo-fields hidden>
+            <header class="combo-editor-header">
+                <div>
+                    <strong>Componentes del combo</strong>
+                    <p class="muted">El stock del combo se calcula con el mínimo disponible entre sus componentes.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-combo-add>+ Agregar componente</button>
+            </header>
+            <div class="combo-rows" data-combo-rows></div>
+        </div>
+        <p class="form-error" data-product-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-product-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-product-submit>Guardar producto</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="product-detail-modal" title="Detalle del producto" size="wide"></erp-modal>
+
+<erp-modal id="stock-modal" title="Actualizar stock">
+    <form class="form-stack" data-stock-form>
+        <div class="form-grid">
+            <label class="field">
+                <span>Modo</span>
+                <select data-stock-mode>
+                    <option value="add">Agregar unidades</option>
+                    <option value="set">Fijar stock final</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>Cantidad</span>
+                <input type="number" min="0" step="1" data-stock-quantity value="1">
+            </label>
+        </div>
+        <label class="field checkbox-field">
+            <span>Descontar insumos según la receta</span>
+            <input type="checkbox" data-stock-consume checked>
+        </label>
+        <div class="stock-consumption" data-stock-consumption></div>
+        <p class="form-note" data-stock-note></p>
+        <p class="form-error" data-stock-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-stock-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-stock-submit>Aplicar stock</button>
+        </div>
+    </form>
+</erp-modal>

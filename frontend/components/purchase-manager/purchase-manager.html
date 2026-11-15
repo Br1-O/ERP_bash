@@ -1,0 +1,74 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <div class="tabs-inline">
+            <button class="tab-inline active" type="button" data-purchase-view="recommendations">Reposición sugerida</button>
+            <button class="tab-inline" type="button" data-purchase-view="history">Historial de compras</button>
+        </div>
+        <div class="inline-actions" data-history-actions hidden>
+            <label class="search-field">
+                <span>Buscar compra</span>
+                <input type="search" data-purchase-search placeholder="Proveedor, nota o número…">
+            </label>
+            <label class="field compact-field">
+                <span>Proveedor</span>
+                <select data-purchase-supplier-filter><option value="0">Todos</option></select>
+            </label>
+        </div>
+    </div>
+
+    <article class="card manager-card" data-recommendations-panel>
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Proyección de consumo</span>
+                <h3>Insumos a reponer</h3>
+            </div>
+            <div class="inline-actions">
+                <span class="badge badge-soft" data-recommendation-count>0 insumos</span>
+                <button class="btn primary small" type="button" data-generate-order disabled>Generar pedido</button>
+            </div>
+        </header>
+        <p class="form-note">La cantidad sugerida combina la última compra con la proyección de consumo de 14 días. Puede ajustar cada cantidad antes de generar el mensaje.</p>
+        <div class="entity-grid recommendation-grid" data-recommendation-list></div>
+        <div class="empty-state" data-recommendation-empty hidden>
+            <strong>No hay insumos críticos</strong>
+            <span>El stock actual cubre la proyección de consumo.</span>
+        </div>
+    </article>
+
+    <article class="card manager-card" data-history-panel hidden>
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Trazabilidad</span>
+                <h3>Compras registradas</h3>
+            </div>
+            <span class="badge badge-soft" data-purchase-count>0 compras</span>
+        </header>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr><th>Compra</th><th>Fecha</th><th>Proveedor</th><th>Insumos</th><th>Unidades</th><th>Total</th></tr>
+                </thead>
+                <tbody data-purchase-body></tbody>
+            </table>
+        </div>
+        <div class="empty-state" data-purchase-empty hidden>
+            <strong>No hay compras para mostrar</strong>
+            <span>Ajuste los filtros o registre una compra desde la reposición sugerida.</span>
+        </div>
+        <erp-pagination data-purchase-pagination></erp-pagination>
+    </article>
+</section>
+
+<erp-modal id="order-modal" title="Pedido generado" size="wide">
+    <div class="order-summary" data-order-content></div>
+    <p class="form-error" data-order-error hidden></p>
+    <div class="form-actions">
+        <button class="btn ghost" type="button" data-order-cancel>Cerrar</button>
+        <button class="btn ghost" type="button" data-copy-order>Copiar mensaje</button>
+        <button class="btn primary" type="button" data-register-order>Registrar compra</button>
+    </div>
+</erp-modal>
+
+<erp-modal id="purchase-detail-modal" title="Detalle de compra" size="wide"></erp-modal>
+
+<erp-invoice-generator id="purchase-invoice"></erp-invoice-generator>
