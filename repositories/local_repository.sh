@@ -48,11 +48,13 @@ SELECT json_object(
             'id', id, 'name', name)) FROM (SELECT id, name FROM Categories ORDER BY id)),
         'suppliers', (SELECT json_group_array(json_object(
             'id', id, 'name', name, 'contact_person', contact_person,
-            'phone', phone, 'email', email, 'address', address))
-            FROM (SELECT id, name, contact_person, phone, email, address FROM Suppliers ORDER BY id)),
+            'phone', phone, 'email', email, 'address', address, 'active', active))
+            FROM (SELECT id, name, contact_person, phone, email, address, active
+                  FROM Suppliers ORDER BY id)),
         'customers', (SELECT json_group_array(json_object(
-            'id', id, 'name', name, 'type', type, 'phone', phone, 'email', email))
-            FROM (SELECT id, name, type, phone, email FROM Customers ORDER BY id)),
+            'id', id, 'name', name, 'type', type, 'phone', phone, 'email', email,
+            'active', active))
+            FROM (SELECT id, name, type, phone, email, active FROM Customers ORDER BY id)),
         'inputs', (SELECT json_group_array(json_object(
             'id', id, 'name', name, 'category_id', category_id, 'stock', stock,
             'unit', unit, 'cost', cost, 'supplier_id', supplier_id,
@@ -93,10 +95,16 @@ SELECT json_object(
             'discount_value', discount_value, 'discount_amount', discount_amount,
             'total_amount', total_amount, 'payment_method', payment_method,
             'status', status, 'notes', notes, 'created_by', created_by,
-            'stock_applied', stock_applied, 'order_type', order_type))
+            'stock_applied', stock_applied, 'order_type', order_type,
+            'order_stage', order_stage, 'cancel_reason', cancel_reason,
+            'cancelled_by', cancelled_by,
+            'cancel_authorized_by', cancel_authorized_by,
+            'cancelled_at', cancelled_at))
             FROM (SELECT id, timestamp, customer_id, subtotal_amount, discount_type,
                          discount_value, discount_amount, total_amount, payment_method,
-                         status, notes, created_by, stock_applied, order_type
+                         status, notes, created_by, stock_applied, order_type,
+                         order_stage, cancel_reason, cancelled_by,
+                         cancel_authorized_by, cancelled_at
                   FROM Sales ORDER BY id)),
         'sale_items', (SELECT json_group_array(json_object(
             'id', id, 'sale_id', sale_id, 'product_id', product_id,
@@ -114,8 +122,9 @@ SELECT json_object(
         'purchases', (SELECT json_group_array(json_object(
             'id', id, 'timestamp', timestamp, 'supplier_id', supplier_id,
             'total_amount', total_amount, 'notes', notes, 'status', status,
-            'created_by', created_by))
-            FROM (SELECT id, timestamp, supplier_id, total_amount, notes, status, created_by
+            'created_by', created_by, 'stock_applied', stock_applied))
+            FROM (SELECT id, timestamp, supplier_id, total_amount, notes, status,
+                         created_by, stock_applied
                   FROM Purchases ORDER BY id)),
         'purchase_items', (SELECT json_group_array(json_object(
             'id', id, 'purchase_id', purchase_id, 'input_id', input_id,

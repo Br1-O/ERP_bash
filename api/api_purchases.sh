@@ -15,16 +15,19 @@ api_purchases_int() {
 }
 
 api_purchases_json() {
-    local search="${1:-}" supplier_id="${2:-0}"
+    local search="${1:-}" supplier_id="${2:-0}" status="${3:-all}"
     local page per_page
-    page=$(api_purchases_int "${3:-1}" 1 1 100000)
-    per_page=$(api_purchases_int "${4:-8}" 8 1 50)
+    page=$(api_purchases_int "${4:-1}" 1 1 100000)
+    per_page=$(api_purchases_int "${5:-8}" 8 1 50)
     [[ "${supplier_id}" =~ ^[0-9]+$ ]] || supplier_id=0
 
     local -a where=("1 = 1")
     if (( supplier_id > 0 )); then
         where+=("pu.supplier_id = ${supplier_id}")
     fi
+    case "${status}" in
+        pending|processing|finished) where+=("pu.status = '${status}'") ;;
+    esac
     if [[ -n "${search}" ]]; then
         local like
         like=$(db_quote "%${search}%")
@@ -45,10 +48,10 @@ api_purchases_json() {
     (( page > pages && pages > 0 )) && page="${pages}"
     offset=$(( (page - 1) * per_page ))
 
-    local rows row id timestamp supplier_name supplier_id_value total_amount notes status items units item out=""
+    local rows row id timestamp supplier_name supplier_id_value total_amount notes status stock_applied items units item out=""
     rows=$(db_query "SELECT pu.id, datetime(pu.timestamp), COALESCE(s.name, 'Sin proveedor'),
                             COALESCE(pu.supplier_id, 0), pu.total_amount, COALESCE(pu.notes, ''),
-                            pu.status, COUNT(pi.id), COALESCE(SUM(pi.quantity), 0)
+                            pu.status, COALESCE(pu.stock_applied, 0), COUNT(pi.id), COALESCE(SUM(pi.quantity), 0)
                      FROM Purchases pu
                      LEFT JOIN Suppliers s ON s.id = pu.supplier_id
                      LEFT JOIN PurchaseItems pi ON pi.purchase_id = pu.id
@@ -57,12 +60,12 @@ api_purchases_json() {
                      ORDER BY pu.timestamp DESC, pu.id DESC
                      LIMIT ${per_page} OFFSET ${offset};")
 
-    while IFS='|' read -r id timestamp supplier_name supplier_id_value total_amount notes status items units; do
+    while IFS='|' read -r id timestamp supplier_name supplier_id_value total_amount notes status stock_applied items units; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%s,"date":%s,"supplier":%s,"supplier_id":%s,"total":%s,"notes":%s,"status":%s,"items":%s,"units":%s}' \
+        item=$(printf '{"id":%s,"date":%s,"supplier":%s,"supplier_id":%s,"total":%s,"notes":%s,"status":%s,"stock_applied":%s,"items":%s,"units":%s}' \
             "$(json_number "${id}")" "$(json_quote "${timestamp}")" "$(json_quote "${supplier_name}")" \
             "$(json_number "${supplier_id_value}")" "$(json_number "${total_amount}")" \
-            "$(json_quote "${notes}")" "$(json_quote "${status}")" \
+            "$(json_quote "${notes}")" "$(json_quote "${status}")" "$(json_number "${stock_applied}")" \
             "$(json_number "${items}")" "$(json_number "${units}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
@@ -75,16 +78,16 @@ api_purchase_detail_json() {
     local purchase_id="${1:-0}"
     [[ "${purchase_id}" =~ ^[0-9]+$ ]] || return 1
 
-    local row id timestamp supplier_id supplier contact phone email total_amount notes status created_by
+    local row id timestamp supplier_id supplier contact phone email total_amount notes status stock_applied created_by
     row=$(db_query "SELECT pu.id, datetime(pu.timestamp), COALESCE(pu.supplier_id, 0),
                            COALESCE(s.name, 'Sin proveedor'), COALESCE(s.contact_person, ''),
                            COALESCE(s.phone, ''), COALESCE(s.email, ''), pu.total_amount,
-                           COALESCE(pu.notes, ''), pu.status, pu.created_by
+                           COALESCE(pu.notes, ''), pu.status, COALESCE(pu.stock_applied, 0), pu.created_by
                     FROM Purchases pu
                     LEFT JOIN Suppliers s ON s.id = pu.supplier_id
                     WHERE pu.id = ${purchase_id};")
     [[ -z "${row}" ]] && return 1
-    IFS='|' read -r id timestamp supplier_id supplier contact phone email total_amount notes status created_by <<< "${row}"
+    IFS='|' read -r id timestamp supplier_id supplier contact phone email total_amount notes status stock_applied created_by <<< "${row}"
 
     local item_rows item_out="" iid input_id input_name unit quantity unit_cost subtotal
     local -a message_lines=()
@@ -113,20 +116,21 @@ api_purchase_detail_json() {
     done
     message+="Total estimado: \$$(LC_ALL=C awk -v t="${total_amount}" 'BEGIN { printf "%.2f", t }')"
 
-    printf '{"id":%s,"date":%s,"supplier_id":%s,"supplier":%s,"contact":%s,"phone":%s,"email":%s,"total":%s,"notes":%s,"status":%s,"created_by":%s,"items":[%s],"message":%s}' \
+    printf '{"id":%s,"date":%s,"supplier_id":%s,"supplier":%s,"contact":%s,"phone":%s,"email":%s,"total":%s,"notes":%s,"status":%s,"stock_applied":%s,"created_by":%s,"items":[%s],"message":%s}' \
         "$(json_number "${id}")" "$(json_quote "${timestamp}")" "$(json_number "${supplier_id}")" \
         "$(json_quote "${supplier}")" "$(json_quote "${contact}")" "$(json_quote "${phone}")" \
         "$(json_quote "${email}")" "$(json_number "${total_amount}")" "$(json_quote "${notes}")" \
-        "$(json_quote "${status}")" "$(json_quote "${created_by}")" "${item_out}" "$(json_quote "${message}")"
+        "$(json_quote "${status}")" "$(json_number "${stock_applied}")" "$(json_quote "${created_by}")" \
+        "${item_out}" "$(json_quote "${message}")"
 }
 
 api_recommendations_json() {
     local rows row id name unit stock threshold cost supplier supplier_id contact phone email
     rows=$(db_query "SELECT i.id, i.name, i.unit, i.stock, i.min_stock_threshold, i.cost,
-                            COALESCE(s.name, 'Sin proveedor'), COALESCE(i.supplier_id, 0),
+                            COALESCE(s.name, 'Sin proveedor'), COALESCE(s.id, 0),
                             COALESCE(s.contact_person, ''), COALESCE(s.phone, ''), COALESCE(s.email, '')
                      FROM Inputs i
-                     LEFT JOIN Suppliers s ON s.id = i.supplier_id
+                     LEFT JOIN Suppliers s ON s.id = i.supplier_id AND s.active = 1
                      WHERE i.active = 1
                      ORDER BY i.name;")
 
@@ -181,65 +185,211 @@ api_recommendations_json() {
     printf '[%s]' "${out}"
 }
 
-api_purchase_create() {
-    local supplier_id="${1:-0}" notes="${2:-}"
-    local -n _input_ids=$3
-    local -n _quantities=$4
-    local -n _unit_costs=$5
+_api_purchases_validate_items() {
+    local -n _purchase_input_ids=$1
+    local -n _purchase_quantities=$2
+    local -n _purchase_unit_costs=$3
 
-    AUTH_ERROR=""
-    PURCHASE_ID=""
-
-    [[ "${supplier_id}" =~ ^[0-9]+$ ]] && (( supplier_id > 0 )) || { AUTH_ERROR="Proveedor inválido."; return 1; }
-    (( ${#_input_ids[@]} > 0 )) || { AUTH_ERROR="La compra debe incluir al menos un insumo."; return 1; }
-
-    local exists
-    exists=$(db_scalar "SELECT COUNT(*) FROM Suppliers WHERE id = ${supplier_id};" 2>/dev/null || printf '0')
-    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El proveedor no existe."; return 1; }
+    (( ${#_purchase_input_ids[@]} > 0 )) || { AUTH_ERROR="El pedido de compra debe incluir al menos un insumo."; return 1; }
 
     local -A seen=()
-    local i input_id quantity unit_cost
-    for (( i = 0; i < ${#_input_ids[@]}; i++ )); do
-        input_id="${_input_ids[$i]}"
-        quantity="${_quantities[$i]:-0}"
-        unit_cost="${_unit_costs[$i]:-0}"
+    local i input_id quantity unit_cost exists
+    for (( i = 0; i < ${#_purchase_input_ids[@]}; i++ )); do
+        input_id="${_purchase_input_ids[$i]}"
+        quantity="${_purchase_quantities[$i]:-0}"
+        unit_cost="${_purchase_unit_costs[$i]:-0}"
         [[ "${input_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Insumo inválido."; return 1; }
-        [[ -z "${seen[${input_id}]:-}" ]] || { AUTH_ERROR="La compra contiene insumos duplicados."; return 1; }
+        [[ -z "${seen[${input_id}]:-}" ]] || { AUTH_ERROR="El pedido de compra contiene insumos duplicados."; return 1; }
         seen["${input_id}"]=1
         api_inv_is_positive "${quantity}" || { AUTH_ERROR="Cantidad de compra inválida."; return 1; }
         [[ "${unit_cost}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { AUTH_ERROR="Costo unitario inválido."; return 1; }
         exists=$(db_scalar "SELECT COUNT(*) FROM Inputs WHERE id = ${input_id} AND active = 1;" 2>/dev/null || printf '0')
         (( ${exists:-0} > 0 )) || { AUTH_ERROR="El insumo ${input_id} no existe o está inactivo."; return 1; }
     done
+    return 0
+}
+
+_api_purchases_insert_items() {
+    local purchase_id="$1"
+    local -n _purchase_input_ids=$2
+    local -n _purchase_quantities=$3
+    local -n _purchase_unit_costs=$4
+
+    local i input_id quantity unit_cost
+    for (( i = 0; i < ${#_purchase_input_ids[@]}; i++ )); do
+        input_id="${_purchase_input_ids[$i]}"
+        quantity="${_purchase_quantities[$i]}"
+        unit_cost="${_purchase_unit_costs[$i]}"
+        if ! db_exec "INSERT INTO PurchaseItems (purchase_id, input_id, quantity, unit_cost)
+                      VALUES (${purchase_id}, ${input_id}, $(api_inv_decimal "${quantity}"),
+                              $(api_inv_decimal "${unit_cost}"));"; then
+            AUTH_ERROR="No se pudo agregar el insumo ${input_id}. ${DB_LAST_ERROR}"
+            return 1
+        fi
+    done
+    return 0
+}
+
+api_purchase_create() {
+    local supplier_id="${1:-0}" notes="${2:-}" status="${3:-pending}"
+    local -n _input_ids=$4
+    local -n _quantities=$5
+    local -n _unit_costs=$6
+
+    AUTH_ERROR=""
+    PURCHASE_ID=""
+
+    case "${status}" in
+        pending|processing|finished) ;;
+        *) AUTH_ERROR="Estado inicial de compra inválido."; return 1 ;;
+    esac
+    [[ "${supplier_id}" =~ ^[0-9]+$ ]] && (( supplier_id > 0 )) || { AUTH_ERROR="Proveedor inválido."; return 1; }
+
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Suppliers WHERE id = ${supplier_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El proveedor no existe o está inactivo."; return 1; }
+
+    _api_purchases_validate_items _input_ids _quantities _unit_costs || return 1
 
     tx_begin || { AUTH_ERROR="No se pudo iniciar la transacción."; return 1; }
     db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
 
-    if ! db_exec "INSERT INTO Purchases (timestamp, supplier_id, total_amount, notes, status, created_by)
+    if ! db_exec "INSERT INTO Purchases (timestamp, supplier_id, total_amount, notes, status, created_by, stock_applied)
                   VALUES (datetime('now', 'localtime'), ${supplier_id}, 0, $(db_quote "${notes}"),
-                          'Recibida', $(db_quote "${AUTH_USER:-sistema}"));"; then
-        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo registrar la compra.}"
+                          'pending', $(db_quote "${AUTH_USER:-sistema}"), 0);"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo registrar el pedido de compra.}"
         tx_rollback
         return 1
     fi
     PURCHASE_ID=$(db_last_insert_id)
 
-    for (( i = 0; i < ${#_input_ids[@]}; i++ )); do
-        input_id="${_input_ids[$i]}"
-        quantity="${_quantities[$i]}"
-        unit_cost="${_unit_costs[$i]}"
-        if ! db_exec "INSERT INTO PurchaseItems (purchase_id, input_id, quantity, unit_cost)
-                      VALUES (${PURCHASE_ID}, ${input_id}, $(api_inv_decimal "${quantity}"),
-                              $(api_inv_decimal "${unit_cost}"));"; then
-            AUTH_ERROR="No se pudo agregar el insumo ${input_id}. ${DB_LAST_ERROR}"
+    if ! _api_purchases_insert_items "${PURCHASE_ID}" _input_ids _quantities _unit_costs; then
+        tx_rollback
+        return 1
+    fi
+
+    if [[ "${status}" != "pending" ]]; then
+        if ! db_exec "UPDATE Purchases SET status = $(db_quote "${status}") WHERE id = ${PURCHASE_ID};"; then
+            AUTH_ERROR="${DB_LAST_ERROR:-No se pudo cambiar el estado del pedido de compra.}"
             tx_rollback
             return 1
         fi
-    done
+    fi
 
     if ! tx_commit; then
-        AUTH_ERROR="No se pudo confirmar la compra."
+        AUTH_ERROR="No se pudo confirmar el pedido de compra."
         tx_rollback
+        return 1
+    fi
+    return 0
+}
+
+api_purchase_update() {
+    local purchase_id="${1:-0}" supplier_id="${2:--1}" notes="${3:-__KEEP__}" items_provided="${4:-0}"
+    local -n _input_ids=$5
+    local -n _quantities=$6
+    local -n _unit_costs=$7
+
+    AUTH_ERROR=""
+
+    [[ "${purchase_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido de compra inválido."; return 1; }
+
+    local row current_supplier current_notes stock_applied
+    row=$(db_query "SELECT COALESCE(supplier_id, 0), COALESCE(notes, ''), COALESCE(stock_applied, 0)
+                    FROM Purchases WHERE id = ${purchase_id};")
+    [[ -z "${row}" ]] && { AUTH_ERROR="El pedido de compra no existe."; return 2; }
+    IFS='|' read -r current_supplier current_notes stock_applied <<< "${row}"
+
+    [[ "${supplier_id}" == "-1" ]] && supplier_id="${current_supplier}"
+    [[ "${notes}" == "__KEEP__" ]] && notes="${current_notes}"
+
+    if (( stock_applied == 1 )); then
+        if (( items_provided == 1 )); then
+            AUTH_ERROR="Reabra el pedido de compra antes de modificar sus insumos."
+        else
+            AUTH_ERROR="Reabra el pedido de compra antes de modificarlo."
+        fi
+        return 1
+    fi
+
+    [[ "${supplier_id}" =~ ^[0-9]+$ ]] && (( supplier_id > 0 )) || { AUTH_ERROR="Proveedor inválido."; return 1; }
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Suppliers WHERE id = ${supplier_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El proveedor no existe o está inactivo."; return 1; }
+    if (( items_provided == 1 )); then
+        _api_purchases_validate_items _input_ids _quantities _unit_costs || return 1
+    fi
+
+    tx_begin || { AUTH_ERROR="No se pudo iniciar la transacción."; return 1; }
+    db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
+
+    if ! db_exec "UPDATE Purchases
+                  SET supplier_id = ${supplier_id},
+                      notes = $(db_quote "${notes}")
+                  WHERE id = ${purchase_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo actualizar el pedido de compra.}"
+        tx_rollback
+        return 1
+    fi
+
+    if (( items_provided == 1 )); then
+        if ! db_exec "DELETE FROM PurchaseItems WHERE purchase_id = ${purchase_id};"; then
+            AUTH_ERROR="${DB_LAST_ERROR:-No se pudieron reemplazar los insumos del pedido.}"
+            tx_rollback
+            return 1
+        fi
+        if ! _api_purchases_insert_items "${purchase_id}" _input_ids _quantities _unit_costs; then
+            tx_rollback
+            return 1
+        fi
+    fi
+
+    if ! tx_commit; then
+        AUTH_ERROR="No se pudo confirmar la actualización del pedido de compra."
+        tx_rollback
+        return 1
+    fi
+    return 0
+}
+
+api_purchase_set_status() {
+    local purchase_id="${1:-0}" status="${2:-}"
+
+    AUTH_ERROR=""
+
+    [[ "${purchase_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido de compra inválido."; return 1; }
+    case "${status}" in
+        pending|processing|finished) ;;
+        *) AUTH_ERROR="Estado de compra inválido."; return 1 ;;
+    esac
+
+    local current_status
+    current_status=$(db_scalar "SELECT status FROM Purchases WHERE id = ${purchase_id};" 2>/dev/null || printf '')
+    [[ -n "${current_status}" ]] || { AUTH_ERROR="El pedido de compra no existe."; return 2; }
+    [[ "${status}" != "${current_status}" ]] || return 0
+
+    db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
+    if ! db_exec "UPDATE Purchases SET status = $(db_quote "${status}") WHERE id = ${purchase_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo cambiar el estado del pedido de compra.}"
+        return 1
+    fi
+    return 0
+}
+
+api_purchase_delete() {
+    local purchase_id="${1:-0}"
+
+    AUTH_ERROR=""
+
+    [[ "${purchase_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido de compra inválido."; return 1; }
+    local stock_applied
+    stock_applied=$(db_scalar "SELECT COALESCE(stock_applied, 0) FROM Purchases WHERE id = ${purchase_id};" 2>/dev/null || printf '')
+    [[ -n "${stock_applied}" ]] || { AUTH_ERROR="El pedido de compra no existe."; return 2; }
+    (( stock_applied == 0 )) || { AUTH_ERROR="Reabra el pedido de compra antes de eliminarlo."; return 1; }
+
+    db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
+    if ! db_exec "DELETE FROM Purchases WHERE id = ${purchase_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo eliminar el pedido de compra.}"
         return 1
     fi
     return 0

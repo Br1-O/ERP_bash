@@ -22,14 +22,14 @@ view_orders_page() {
 EOF
 )
 
-    view_layout_start "Pedidos y ventas" "orders" "ventas" "${user}" "${role}" "${alerts_count}" "${extra_head}"
+    view_layout_start "Ventas y pedidos" "orders" "ventas" "${user}" "${role}" "${alerts_count}" "${extra_head}"
 
     cat <<'EOF'
                 <section class="section-heading">
                     <div>
                         <span class="eyebrow">Atención al cliente</span>
-                        <h2>Pedidos, entregas y facturación</h2>
-                        <p class="muted">Cree pedidos pendientes, finalícelos para descontar stock, gestione cancelaciones y genere comprobantes en PDF.</p>
+                        <h2>Ventas, pedidos y facturación</h2>
+                        <p class="muted">Registre ventas directas y pedidos, consulte estados y stock, y genere comprobantes para operaciones finalizadas.</p>
                     </div>
                 </section>
 

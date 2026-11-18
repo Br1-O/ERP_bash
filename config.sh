@@ -37,10 +37,13 @@ load_erp_modules() {
         frontend/views/layout.sh \
         frontend/views/login.sh \
         frontend/views/dashboard.sh \
+        frontend/views/insights.sh \
         frontend/views/inventory.sh \
         frontend/views/purchases.sh \
         frontend/views/orders.sh \
+        frontend/views/audit.sh \
         frontend/views/settings.sh \
+        frontend/views/users.sh \
         frontend/views/contacts.sh \
         frontend/cli/menu.sh
     do

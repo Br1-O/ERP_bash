@@ -50,22 +50,51 @@ view_layout_start() {
     local extra_head="${7:-}"
 
     local dashboard_active="" contacts_active="" inventory_active="" purchases_active=""
-    local orders_active="" settings_active=""
+    local orders_active="" settings_active="" insights_active="" audit_active="" users_active=""
     [[ "${active_nav}" == "dashboard" ]] && dashboard_active="active"
     [[ "${active_nav}" == "contacts" ]] && contacts_active="active"
     [[ "${active_nav}" == "inventory" ]] && inventory_active="active"
     [[ "${active_nav}" == "purchases" ]] && purchases_active="active"
     [[ "${active_nav}" == "orders" ]] && orders_active="active"
     [[ "${active_nav}" == "settings" ]] && settings_active="active"
+    [[ "${active_nav}" == "insights" ]] && insights_active="active"
+    [[ "${active_nav}" == "audit" ]] && audit_active="active"
+    [[ "${active_nav}" == "users" ]] && users_active="active"
+
+    local can_metrics=0 can_stock=0 is_admin=0
+    if declare -F api_can_view_metrics >/dev/null 2>&1 && api_can_view_metrics; then can_metrics=1; fi
+    if declare -F api_can_manage_stock >/dev/null 2>&1 && api_can_manage_stock; then can_stock=1; fi
+    if [[ "${role}" == "admin" ]]; then is_admin=1; fi
+
+    local dashboard_nav="" inventory_nav="" purchases_nav="" stock_nav="" catalog_nav=""
+    local insights_nav="" users_nav=""
+    if (( can_metrics == 1 )); then
+        dashboard_nav='<a class="nav-link '"${dashboard_active}"'" href="/dashboard"><span class="nav-icon">◫</span><span>Dashboard</span></a>'
+        stock_nav='<a class="nav-link" href="/dashboard#stock"><span class="nav-icon">▤</span><span>Stock y producción</span></a>'
+        catalog_nav='<a class="nav-link" href="/dashboard#catalogo"><span class="nav-icon">◉</span><span>Catálogo y canasta</span></a>'
+        insights_nav='<a class="nav-link '"${insights_active}"'" href="/inteligencia"><span class="nav-icon">◎</span><span>Inteligencia de canasta</span></a>'
+    fi
+    if (( can_stock == 1 )); then
+        inventory_nav='<a class="nav-link '"${inventory_active}"'" href="/inventario"><span class="nav-icon">◈</span><span>Inventario y recetas</span></a>'
+        purchases_nav='<a class="nav-link '"${purchases_active}"'" href="/compras"><span class="nav-icon">⇄</span><span>Compras y reposición</span></a>'
+    fi
+    if (( is_admin == 1 )); then
+        users_nav='<a class="nav-link '"${users_active}"'" href="/usuarios"><span class="nav-icon">♙</span><span>Usuarios y permisos</span></a>'
+    fi
 
     local sync_button=""
     if [[ "${role}" == "admin" ]]; then
         sync_button='<button class="btn ghost small sync-button" id="open-sync-modal" type="button" title="Sincronizar con PostgreSQL"><span aria-hidden="true">↻</span><span class="sync-label">Sincronizar</span></button>'
     fi
 
+    local alert_pill=""
+    if (( can_metrics == 1 )); then
+        alert_pill='<a class="alert-pill" href="/dashboard#stock" title="Alertas de stock"><span class="alert-dot"></span><span id="alert-count">'"${alert_count}"'</span></a>'
+    fi
+
     view_html_head "${title}" "${extra_head}"
     cat <<EOF
-<body data-active-tab="${active_tab}">
+<body data-active-tab="${active_tab}" data-role="${role}" data-can-view-metrics="${can_metrics}" data-can-manage-stock="${can_stock}">
     <div class="app-shell">
         <aside class="sidebar" id="sidebar">
             <div class="brand">
@@ -77,34 +106,25 @@ view_layout_start() {
             </div>
 
             <nav class="sidebar-nav" aria-label="Navegación principal">
-                <a class="nav-link ${dashboard_active}" href="/dashboard">
-                    <span class="nav-icon">◫</span>
-                    <span>Dashboard</span>
-                </a>
-                <a class="nav-link ${inventory_active}" href="/inventario">
-                    <span class="nav-icon">◈</span>
-                    <span>Inventario y recetas</span>
-                </a>
+                ${dashboard_nav}
+                ${inventory_nav}
                 <a class="nav-link ${orders_active}" href="/ventas">
                     <span class="nav-icon">▦</span>
                     <span>Pedidos y ventas</span>
                 </a>
-                <a class="nav-link ${purchases_active}" href="/compras">
-                    <span class="nav-icon">⇄</span>
-                    <span>Compras y reposición</span>
-                </a>
+                ${purchases_nav}
                 <a class="nav-link ${contacts_active}" href="/contactos">
                     <span class="nav-icon">☏</span>
                     <span>Agenda y contactos</span>
                 </a>
-                <a class="nav-link" href="/dashboard#stock">
-                    <span class="nav-icon">▤</span>
-                    <span>Stock y producción</span>
+                ${stock_nav}
+                ${catalog_nav}
+                ${insights_nav}
+                <a class="nav-link ${audit_active}" href="/auditoria">
+                    <span class="nav-icon">☷</span>
+                    <span>Auditoría</span>
                 </a>
-                <a class="nav-link" href="/dashboard#catalogo">
-                    <span class="nav-icon">◉</span>
-                    <span>Catálogo y canasta</span>
-                </a>
+                ${users_nav}
                 <a class="nav-link ${settings_active}" href="/configuracion">
                     <span class="nav-icon">⚙</span>
                     <span>Configuración</span>
@@ -132,10 +152,7 @@ view_layout_start() {
                 </div>
                 <div class="topbar-actions">
                     ${sync_button}
-                    <a class="alert-pill" href="/dashboard#stock" title="Alertas de stock">
-                        <span class="alert-dot"></span>
-                        <span id="alert-count">${alert_count}</span>
-                    </a>
+                    ${alert_pill}
                     <button class="icon-button" id="theme-toggle" aria-label="Cambiar tema">◐</button>
                 </div>
             </header>

@@ -1,0 +1,94 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <div>
+            <span class="eyebrow">Administración</span>
+            <h3>Usuarios del sistema</h3>
+            <p class="muted">Los PIN se usan para autorizar anulaciones de ventas y pedidos.</p>
+        </div>
+        <div class="inline-actions">
+            <button class="btn primary" type="button" data-create-user>+ Nuevo usuario</button>
+        </div>
+    </div>
+
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Accesos</span>
+                <h3>Cuentas registradas</h3>
+            </div>
+            <span class="badge badge-soft" data-user-count>0 usuarios</span>
+        </header>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr><th>Usuario</th><th>Rol</th><th>Métricas</th><th>Stock</th><th>PIN</th><th>Estado</th><th>Acciones</th></tr>
+                </thead>
+                <tbody data-user-body></tbody>
+            </table>
+        </div>
+        <div class="empty-state" data-user-empty hidden>
+            <strong>No hay usuarios para mostrar</strong>
+            <span>Cree un vendedor o supervisor para comenzar.</span>
+        </div>
+    </article>
+</section>
+
+<erp-modal id="user-form-modal" title="Nuevo usuario" size="wide">
+    <form class="form-stack" data-user-form>
+        <div class="form-grid">
+            <label class="field">
+                <span>Usuario</span>
+                <input type="text" data-user-username maxlength="50" autocomplete="off" required>
+            </label>
+            <label class="field" data-user-password-field>
+                <span>Contraseña</span>
+                <input type="password" data-user-password minlength="6" autocomplete="new-password">
+            </label>
+            <label class="field">
+                <span>Rol</span>
+                <select data-user-role>
+                    <option value="vendedor">Vendedor</option>
+                    <option value="supervisor">Supervisor</option>
+                </select>
+            </label>
+            <label class="field checkbox-field" data-user-active-field hidden>
+                <span>Cuenta activa</span>
+                <input type="checkbox" data-user-active checked>
+            </label>
+            <label class="field checkbox-field">
+                <span>Puede ver métricas</span>
+                <input type="checkbox" data-user-metrics>
+            </label>
+            <label class="field checkbox-field">
+                <span>Puede modificar stock, productos y compras</span>
+                <input type="checkbox" data-user-stock>
+            </label>
+            <label class="field span-2" data-user-pin-field>
+                <span>PIN de autorización</span>
+                <input type="password" data-user-pin minlength="4" maxlength="20" autocomplete="new-password">
+                <small class="muted" data-user-pin-help>Obligatorio para supervisores. Se usa al anular ventas o pedidos.</small>
+            </label>
+        </div>
+        <p class="form-error" data-user-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-user-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-user-submit>Crear usuario</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="user-pin-modal" title="Cambiar PIN">
+    <form class="form-stack" data-user-pin-form>
+        <p class="form-note" data-user-pin-summary></p>
+        <label class="field">
+            <span>Nuevo PIN</span>
+            <input type="password" data-user-pin-new minlength="4" maxlength="20" autocomplete="new-password" required>
+            <small class="muted">Entre 4 y 20 caracteres, sin espacios.</small>
+        </label>
+        <p class="form-error" data-user-pin-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-user-pin-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-user-pin-submit>Guardar PIN</button>
+        </div>
+    </form>
+</erp-modal>

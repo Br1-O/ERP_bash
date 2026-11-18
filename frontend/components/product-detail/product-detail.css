@@ -1,0 +1,17 @@
+#dashboard-product-detail .recipe-steps {
+    margin: 0;
+    padding-left: 1.2rem;
+    color: var(--text-soft);
+    font-size: 0.8rem;
+}
+
+#dashboard-product-detail .recipe-steps li + li {
+    margin-top: 5px;
+}
+
+#dashboard-product-detail .recipe-description {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}

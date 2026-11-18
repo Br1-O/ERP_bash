@@ -38,7 +38,7 @@ api_register_sale() {
     local safe_customer="NULL"
     if [[ "${customer_id}" =~ ^[0-9]+$ ]] && (( customer_id > 0 )); then
         local customer_exists
-        customer_exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id};" 2>/dev/null || printf '0')
+        customer_exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id} AND active = 1;" 2>/dev/null || printf '0')
         (( ${customer_exists:-0} > 0 )) || { AUTH_ERROR="El cliente no existe."; return 1; }
         safe_customer="${customer_id}"
     fi
@@ -204,28 +204,104 @@ api_register_production_batch() {
     return 0
 }
 
+api_sales_cancel() {
+    local sale_id="${1:-0}" reason="${2:-}" pin="${3:-}"
+    AUTH_ERROR=""
+    AUTH_AUTHORIZED_BY=""
+
+    [[ "${sale_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Venta inválida."; return 1; }
+    reason="${reason#"${reason%%[![:space:]]*}"}"
+    reason="${reason%"${reason##*[![:space:]]}"}"
+    [[ ${#reason} -ge 3 && ${#reason} -le 300 ]] || {
+        AUTH_ERROR="El motivo de anulación debe tener entre 3 y 300 caracteres."
+        return 1
+    }
+
+    if ! api_verify_authorization_pin "${pin}"; then
+        return 1
+    fi
+
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
+    local row order_type stage_value stock_applied current_status
+    row=$(db_query "SELECT s.order_type, ${stage_expr}, s.stock_applied, s.status
+                    FROM Sales s WHERE s.id = ${sale_id};")
+    [[ -z "${row}" ]] && { AUTH_ERROR="La venta no existe."; return 2; }
+    IFS='|' read -r order_type stage_value stock_applied current_status <<< "${row}"
+
+    if [[ "${current_status}" == "cancel" || "${stage_value}" == "cancel" ]]; then
+        AUTH_ERROR="El registro ya está anulado."
+        return 2
+    fi
+    case "${stage_value}" in
+        draft|pending|preparing|confirmed|paid|delivered) ;;
+        *) AUTH_ERROR="Estado de registro inválido para anular."; return 1 ;;
+    esac
+    if [[ "${order_type}" == "direct" && "${current_status}" != "finished" ]]; then
+        AUTH_ERROR="Solo se pueden anular ventas directas finalizadas."
+        return 1
+    fi
+
+    tx_begin || { AUTH_ERROR="No se pudo iniciar la transacción."; return 1; }
+    db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
+
+    if ! db_exec "UPDATE Sales
+                     SET status = 'cancel',
+                         order_stage = 'cancel',
+                         cancel_reason = $(db_quote "${reason}"),
+                         cancelled_by = $(db_quote "${AUTH_USER:-sistema}"),
+                         cancel_authorized_by = $(db_quote "${AUTH_AUTHORIZED_BY}"),
+                         cancelled_at = datetime('now', 'localtime')
+                   WHERE id = ${sale_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo anular la venta.}"
+        tx_rollback
+        return 1
+    fi
+
+    if ! db_exec "INSERT INTO InventoryJournal (user, action, entity, payload, status)
+                  VALUES ($(db_quote "${AUTH_USER:-sistema}"),
+                          $(db_quote "$([[ "${order_type}" == "order" ]] && printf 'ORDER_CANCELLED' || printf 'SALE_CANCELLED')"),
+                          'Sales',
+                          $(db_quote "sale_id=${sale_id};order_type=${order_type};reason=${reason};authorized_by=${AUTH_AUTHORIZED_BY};stock_applied=${stock_applied}"),
+                          'DONE');"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo registrar la anulación.}"
+        tx_rollback
+        return 1
+    fi
+
+    if ! tx_commit; then
+        AUTH_ERROR="No se pudo confirmar la anulación."
+        tx_rollback
+        return 1
+    fi
+    return 0
+}
+
 api_recent_sales_json() {
     local limit="${1:-8}"
     [[ "${limit}" =~ ^[0-9]+$ ]] || limit=8
     (( limit > 50 )) && limit=50
 
-    local rows row id timestamp customer subtotal discount total payment units item out=""
+    local rows row id timestamp customer subtotal discount total payment units order_type stage_value item out=""
     rows=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(c.name, 'Consumidor final'),
                             s.subtotal_amount, s.discount_amount, s.total_amount,
-                            s.payment_method, COALESCE(SUM(si.quantity), 0)
+                            s.payment_method, COALESCE(SUM(si.quantity), 0), s.order_type,
+                            COALESCE(NULLIF(s.order_stage, ''), CASE WHEN s.status = 'cancel' THEN 'cancel' WHEN s.order_type = 'direct' THEN 'delivered' WHEN s.status = 'finished' THEN 'delivered' ELSE 'pending' END)
                      FROM Sales s
                      LEFT JOIN Customers c ON c.id = s.customer_id
                      LEFT JOIN SaleItems si ON si.sale_id = s.id
+                     WHERE s.status = 'finished'
                      GROUP BY s.id
                      ORDER BY s.id DESC
                      LIMIT ${limit};")
 
-    while IFS='|' read -r id timestamp customer subtotal discount total payment units; do
+    while IFS='|' read -r id timestamp customer subtotal discount total payment units order_type stage_value; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"timestamp":%s,"customer":%s,"subtotal":%s,"discount":%s,"total":%s,"payment":%s,"units":%s}' \
+        item=$(printf '{"id":%d,"timestamp":%s,"customer":%s,"subtotal":%s,"discount":%s,"total":%s,"payment":%s,"units":%s,"order_type":%s,"status":%s}' \
             "${id}" "$(json_quote "${timestamp}")" "$(json_quote "${customer}")" \
             "$(json_number "${subtotal}")" "$(json_number "${discount}")" \
-            "$(json_number "${total}")" "$(json_quote "${payment}")" "$(json_number "${units}")")
+            "$(json_number "${total}")" "$(json_quote "${payment}")" "$(json_number "${units}")" \
+            "$(json_quote "${order_type}")" "$(json_quote "${stage_value}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
 
@@ -254,4 +330,68 @@ api_journal_json() {
     done <<< "${rows}"
 
     printf '[%s]' "${out}"
+}
+
+api_audit_int() {
+    local value="${1:-}" default="${2:-1}" min="${3:-1}" max="${4:-100}"
+    [[ "${value}" =~ ^[0-9]+$ ]] || value="${default}"
+    value=$((10#${value}))
+    (( value < min )) && value="${min}"
+    (( value > max )) && value="${max}"
+    printf '%s' "${value}"
+}
+
+api_audit_json() {
+    local search="${1:-}"
+    local page per_page
+    page=$(api_audit_int "${2:-1}" 1 1 100000)
+    per_page=$(api_audit_int "${3:-20}" 20 1 100)
+
+    local -a where=("1 = 1")
+    if [[ -n "${search}" ]]; then
+        local like
+        like=$(db_quote "%${search}%")
+        where+=("(LOWER(COALESCE(user, '')) LIKE LOWER(${like})
+                  OR LOWER(COALESCE(action, '')) LIKE LOWER(${like})
+                  OR LOWER(COALESCE(entity, '')) LIKE LOWER(${like})
+                  OR LOWER(COALESCE(payload, '')) LIKE LOWER(${like})
+                  OR LOWER(COALESCE(status, '')) LIKE LOWER(${like})
+                  OR CAST(id AS TEXT) LIKE ${like})")
+    fi
+    local where_sql="" clause sep=""
+    for clause in "${where[@]}"; do
+        where_sql+="${sep}${clause}"
+        sep=" AND "
+    done
+
+    local total pages offset
+    total=$(db_scalar "SELECT COUNT(*) FROM InventoryJournal WHERE ${where_sql};" 2>/dev/null || printf '0')
+    [[ "${total}" =~ ^[0-9]+$ ]] || total=0
+    pages=$(( (total + per_page - 1) / per_page ))
+    if (( pages == 0 )); then
+        page=1
+    elif (( page > pages )); then
+        page="${pages}"
+    fi
+    offset=$(( (page - 1) * per_page ))
+
+    local rows row id timestamp user action entity payload status item out=""
+    rows=$(db_query "SELECT id, datetime(timestamp), user, action, entity,
+                            COALESCE(payload, ''), status
+                     FROM InventoryJournal
+                     WHERE ${where_sql}
+                     ORDER BY id DESC
+                     LIMIT ${per_page} OFFSET ${offset};")
+
+    while IFS='|' read -r id timestamp user action entity payload status; do
+        [[ -z "${id}" ]] && continue
+        item=$(printf '{"id":%d,"timestamp":%s,"user":%s,"action":%s,"entity":%s,"payload":%s,"status":%s}' \
+            "${id}" "$(json_quote "${timestamp}")" "$(json_quote "${user}")" \
+            "$(json_quote "${action}")" "$(json_quote "${entity}")" \
+            "$(json_quote "${payload}")" "$(json_quote "${status}")")
+        out+="${out:+,}${item}"
+    done <<< "${rows}"
+
+    printf '{"items":[%s],"total":%s,"page":%s,"per_page":%s,"pages":%s}' \
+        "${out}" "${total}" "${page}" "${per_page}" "${pages}"
 }

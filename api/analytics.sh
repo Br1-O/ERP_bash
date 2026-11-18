@@ -7,13 +7,19 @@
 [[ -n "${_ERP_ANALYTICS_LOADED:-}" ]] && return 0
 declare -g _ERP_ANALYTICS_LOADED=1
 
+_analytics_sold_condition() {
+    printf "s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))"
+}
+
 analytics_daily_json() {
     local raw
-    raw=$(db_query "SELECT date(timestamp), SUM(total_amount), COUNT(*)
-                    FROM Sales
-                    WHERE status = 'finished'
-                    GROUP BY date(timestamp)
-                    ORDER BY date(timestamp);")
+    local sold_condition
+    sold_condition=$(_analytics_sold_condition)
+    raw=$(db_query "SELECT date(s.timestamp), SUM(s.total_amount), COUNT(*)
+                    FROM Sales s
+                    WHERE ${sold_condition}
+                    GROUP BY date(s.timestamp)
+                    ORDER BY date(s.timestamp);")
 
     LC_ALL=C awk -F'|' '
     function pct(p,    idx, lo, hi, frac) {
@@ -72,10 +78,12 @@ analytics_daily_json() {
 
 analytics_binomial_json() {
     local peak_row peak_hour peak_count n k
-    peak_row=$(db_query "SELECT strftime('%H', timestamp), COUNT(*)
-                         FROM Sales
-                         WHERE status = 'finished'
-                         GROUP BY strftime('%H', timestamp)
+    local sold_condition
+    sold_condition=$(_analytics_sold_condition)
+    peak_row=$(db_query "SELECT strftime('%H', s.timestamp), COUNT(*)
+                         FROM Sales s
+                         WHERE ${sold_condition}
+                         GROUP BY strftime('%H', s.timestamp)
                          ORDER BY 2 DESC
                          LIMIT 1;")
     peak_hour="--"
@@ -105,6 +113,11 @@ analytics_binomial_json() {
     }'
 }
 
+_analytics_available_stock_sql() {
+    local alias="${1:-p}"
+    printf 'CASE WHEN %s.is_combo = 1 THEN COALESCE((SELECT MIN(CAST(cp.stock / ci.quantity AS INTEGER)) FROM ComboItems ci JOIN Products cp ON cp.id = ci.component_product_id WHERE ci.combo_product_id = %s.id AND cp.active = 1), 0) ELSE %s.stock END' "${alias}" "${alias}" "${alias}"
+}
+
 _analytics_reorder_array() {
     local raw="$1"
     local period="${2:-30}"
@@ -122,6 +135,7 @@ _analytics_reorder_array() {
         total[n] = $6 + 0;
         sq[n] = $7 + 0;
         unit[n] = $9;
+        combo[n] = $10 + 0;
     }
     END {
         printf "[";
@@ -134,9 +148,9 @@ _analytics_reorder_array() {
             safety = 1.65 * sd * sqrt(lead);
             reorder = mean * lead + safety;
             risk = stock[i] - reorder;
-            printf "%s{\"id\":%d,\"name\":\"%s\",\"stock\":%.2f,\"threshold\":%.2f,\"cost\":%.2f,\"mean\":%.3f,\"sd\":%.3f,\"cv\":%.2f,\"safety\":%.2f,\"reorder\":%.2f,\"risk\":%.2f,\"unit\":\"%s\",\"critical\":%s}",
+            printf "%s{\"id\":%d,\"name\":\"%s\",\"stock\":%.2f,\"threshold\":%.2f,\"cost\":%.2f,\"mean\":%.3f,\"sd\":%.3f,\"cv\":%.2f,\"safety\":%.2f,\"reorder\":%.2f,\"risk\":%.2f,\"unit\":\"%s\",\"is_combo\":%d,\"critical\":%s}",
                    (i > 1 ? "," : ""), id[i], name[i], stock[i], threshold[i], cost[i],
-                   mean, sd, cv, safety, reorder, risk, unit[i],
+                   mean, sd, cv, safety, reorder, risk, unit[i], combo[i],
                    ((stock[i] <= threshold[i] || stock[i] <= reorder) ? "true" : "false");
         }
         printf "]\n";
@@ -144,9 +158,10 @@ _analytics_reorder_array() {
 }
 
 analytics_reorder_products_json() {
-    local raw
-    raw=$(db_query "SELECT p.id, p.name, p.stock, p.min_production_threshold, p.cost,
-                           COALESCE(d.total, 0), COALESCE(d.sq, 0), COALESCE(d.days, 0), 'unidades'
+    local raw stock_expr
+    stock_expr=$(_analytics_available_stock_sql "p")
+    raw=$(db_query "SELECT p.id, p.name, ${stock_expr}, p.min_production_threshold, p.cost,
+                           COALESCE(d.total, 0), COALESCE(d.sq, 0), COALESCE(d.days, 0), 'unidades', p.is_combo
                     FROM Products p
                     LEFT JOIN (
                         SELECT product_id,
@@ -158,7 +173,7 @@ analytics_reorder_products_json() {
                                    SUM(si.quantity) AS day_qty
                             FROM SaleItems si
                             JOIN Sales s ON s.id = si.sale_id
-                            WHERE s.status = 'finished'
+                            WHERE s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
                               AND date(s.timestamp) >= date('now', '-29 days')
                             GROUP BY si.product_id, date(s.timestamp)
                         ) daily
@@ -247,7 +262,7 @@ analytics_hypothesis_json() {
                              FROM SaleItems si
                              JOIN Sales s ON s.id = si.sale_id
                              JOIN Products p ON p.id = si.product_id
-                             WHERE s.status = 'finished'
+                             WHERE s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
                                AND date(s.timestamp) >= date('now', '-30 days');")
         [[ -n "${feedback}" ]] && IFS='|' read -r successes trials <<< "${feedback}"
     fi
@@ -281,27 +296,40 @@ analytics_hypothesis_json() {
 }
 
 analytics_basket_json() {
+    _analytics_basket_json 6 3 3
+}
+
+analytics_basket_full_json() {
+    _analytics_basket_json 0 0 0
+}
+
+_analytics_basket_json() {
+    local limit_products="${1:-6}" limit_combos="${2:-3}" limit_substitutes="${3:-3}"
+    local top_limit=""
+    (( limit_products > 0 )) && top_limit="LIMIT ${limit_products}"
+
     local top_rows
     top_rows=$(db_query "SELECT p.id, p.name, COALESCE(SUM(si.quantity), 0) AS units
                          FROM Products p
                          JOIN SaleItems si ON si.product_id = p.id
                          JOIN Sales s ON s.id = si.sale_id
-                         WHERE p.active = 1 AND s.status = 'finished'
+                         WHERE p.active = 1 AND s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
                            AND date(s.timestamp) >= date('now', '-59 days')
                          GROUP BY p.id
                          ORDER BY units DESC, p.id
-                         LIMIT 6;")
+                         ${top_limit};")
 
     if [[ -z "${top_rows}" ]]; then
         printf '{"products":[],"matrix":[],"pairs":[],"combos":[],"substitutes":[],"sales_count":0}\n'
         return
     fi
 
-    local ids="" names="" id name units
+    local ids="" names="" unit_values="" id name units
     while IFS='|' read -r id name units; do
         [[ -z "${id}" ]] && continue
         ids+="${ids:+,}${id}"
         names+="${names:+|}${name}"
+        unit_values+="${unit_values:+|}${units}"
     done <<< "${top_rows}"
 
     local items
@@ -309,12 +337,13 @@ analytics_basket_json() {
                       FROM SaleItems si
                       JOIN Sales s ON s.id = si.sale_id
                       WHERE si.product_id IN (${ids})
-                        AND s.status = 'finished'
+                        AND s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
                         AND date(s.timestamp) >= date('now', '-59 days')
                       GROUP BY si.sale_id, si.product_id
                       ORDER BY si.sale_id;")
 
-    LC_ALL=C awk -F'|' -v ids="${ids}" -v names="${names}" '
+    LC_ALL=C awk -F'|' -v ids="${ids}" -v names="${names}" -v unit_values="${unit_values}" \
+        -v limit_combos="${limit_combos}" -v limit_substitutes="${limit_substitutes}" '
     function esc(x) { gsub(/\\/, "\\\\", x); gsub(/"/, "\\\"", x); return x; }
     {
         sale = $1; prod = $2; qty = $3 + 0;
@@ -324,6 +353,7 @@ analytics_basket_json() {
     END {
         split(ids, id, ",");
         split(names, nm, "|");
+        split(unit_values, un, "|");
         m = length(id);
 
         for (i = 1; i <= m; i++) nm[i] = esc(nm[i]);
@@ -358,7 +388,7 @@ analytics_basket_json() {
 
         printf "{\"products\":[";
         for (i = 1; i <= m; i++) {
-            printf "%s{\"id\":%d,\"name\":\"%s\"}", (i > 1 ? "," : ""), id[i], nm[i];
+            printf "%s{\"id\":%d,\"name\":\"%s\",\"units\":%d}", (i > 1 ? "," : ""), id[i], nm[i], un[i] + 0;
         }
         printf "],\"matrix\":[";
         for (i = 1; i <= m; i++) {
@@ -387,12 +417,14 @@ analytics_basket_json() {
 
         printf "\"combos\":[";
         c = 0;
-        for (i = 1; i <= pc && c < 3; i++) {
+        for (i = 1; i <= pc; i++) {
             p = ord[i];
             if (pcorr[p] <= 0 || pco[p] <= 0) continue;
+            if (limit_combos > 0 && c >= limit_combos) break;
             c++;
-            printf "%s{\"a_name\":\"%s\",\"b_name\":\"%s\",\"corr\":%.4f,\"slope\":%.4f,\"intercept\":%.4f,\"cooccurrence\":%d}",
-                   (c > 1 ? "," : ""), nm[pa[p]], nm[pb[p]], pcorr[p], pb1[p], pb0[p], pco[p];
+            printf "%s{\"a_id\":%d,\"a_name\":\"%s\",\"b_id\":%d,\"b_name\":\"%s\",\"corr\":%.4f,\"slope\":%.4f,\"intercept\":%.4f,\"cooccurrence\":%d}",
+                   (c > 1 ? "," : ""), id[pa[p]], nm[pa[p]], id[pb[p]], nm[pb[p]],
+                   pcorr[p], pb1[p], pb0[p], pco[p];
         }
         printf "],\"substitutes\":[";
 
@@ -404,12 +436,14 @@ analytics_basket_json() {
             ord[j + 1] = key;
         }
         c = 0;
-        for (i = 1; i <= pc && c < 3; i++) {
+        for (i = 1; i <= pc; i++) {
             p = ord[i];
             if (pcorr[p] >= 0) continue;
+            if (limit_substitutes > 0 && c >= limit_substitutes) break;
             c++;
-            printf "%s{\"a_name\":\"%s\",\"b_name\":\"%s\",\"corr\":%.4f,\"cov\":%.4f}",
-                   (c > 1 ? "," : ""), nm[pa[p]], nm[pb[p]], pcorr[p], pcov[p];
+            printf "%s{\"a_id\":%d,\"a_name\":\"%s\",\"b_id\":%d,\"b_name\":\"%s\",\"corr\":%.4f,\"cov\":%.4f}",
+                   (c > 1 ? "," : ""), id[pa[p]], nm[pa[p]], id[pb[p]], nm[pb[p]],
+                   pcorr[p], pcov[p];
         }
         printf "]}\n";
     }' <<< "${items}"
@@ -422,7 +456,7 @@ analytics_categories_json() {
                     JOIN Sales s ON s.id = si.sale_id
                     JOIN Products p ON p.id = si.product_id
                     JOIN Categories c ON c.id = p.category_id
-                    WHERE s.status = 'finished'
+                    WHERE s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
                     GROUP BY c.id
                     ORDER BY 2 DESC;")
 
@@ -446,7 +480,7 @@ analytics_low_inputs_json() {
     rows=$(db_query "SELECT id, name, stock, unit, min_stock_threshold,
                             ROUND(min_stock_threshold - stock, 2)
                      FROM Inputs
-                     WHERE stock <= min_stock_threshold
+                     WHERE active = 1 AND stock <= min_stock_threshold
                      ORDER BY (min_stock_threshold - stock) DESC;")
     while IFS='|' read -r id name stock unit threshold deficit; do
         [[ -z "${id}" ]] && continue
@@ -459,43 +493,49 @@ analytics_low_inputs_json() {
 }
 
 analytics_low_products_json() {
-    local rows row id name stock threshold deficit item out=""
-    rows=$(db_query "SELECT id, name, stock, min_production_threshold,
-                            (min_production_threshold - stock)
-                     FROM Products
-                     WHERE active = 1 AND stock <= min_production_threshold
-                     ORDER BY (min_production_threshold - stock) DESC;")
-    while IFS='|' read -r id name stock threshold deficit; do
+    local rows row id name stock threshold deficit is_combo item out="" stock_expr
+    stock_expr=$(_analytics_available_stock_sql "p")
+    rows=$(db_query "SELECT p.id, p.name, ${stock_expr}, p.min_production_threshold,
+                            (p.min_production_threshold - (${stock_expr})), p.is_combo
+                     FROM Products p
+                     WHERE p.active = 1 AND (${stock_expr}) <= p.min_production_threshold
+                     ORDER BY (p.min_production_threshold - (${stock_expr})) DESC;")
+    while IFS='|' read -r id name stock threshold deficit is_combo; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"name":%s,"stock":%s,"threshold":%s,"deficit":%s}' \
+        item=$(printf '{"id":%d,"name":%s,"stock":%s,"threshold":%s,"deficit":%s,"is_combo":%s}' \
             "${id}" "$(json_quote "${name}")" "$(json_number "${stock}")" \
-            "$(json_number "${threshold}")" "$(json_number "${deficit}")")
+            "$(json_number "${threshold}")" "$(json_number "${deficit}")" "$(json_number "${is_combo}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
     printf '[%s]' "${out}"
 }
 
 analytics_alerts_json() {
-    local inputs products count
+    local inputs products count stock_expr
     inputs=$(analytics_low_inputs_json)
     products=$(analytics_low_products_json)
-    count=$(db_scalar "SELECT (SELECT COUNT(*) FROM Inputs WHERE stock <= min_stock_threshold) +
-                              (SELECT COUNT(*) FROM Products WHERE active = 1 AND stock <= min_production_threshold);" 2>/dev/null || printf '0')
+    stock_expr=$(_analytics_available_stock_sql "p")
+    count=$(db_scalar "SELECT (SELECT COUNT(*) FROM Inputs WHERE active = 1 AND stock <= min_stock_threshold) +
+                              (SELECT COUNT(*) FROM Products p WHERE p.active = 1 AND (${stock_expr}) <= p.min_production_threshold);" 2>/dev/null || printf '0')
     printf '{"inputs":%s,"products":%s,"count":%s}' "${inputs}" "${products}" "$(json_number "${count:-0}")"
 }
 
 analytics_kpis_json() {
     local revenue sales_count units avg_ticket active_products inventory_value customers low_count
-    revenue=$(db_scalar "SELECT COALESCE(SUM(total_amount), 0) FROM Sales WHERE status = 'finished' AND date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
-    sales_count=$(db_scalar "SELECT COUNT(*) FROM Sales WHERE status = 'finished' AND date(timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+    local sold_condition
+    sold_condition=$(_analytics_sold_condition)
+    revenue=$(db_scalar "SELECT COALESCE(SUM(s.total_amount), 0) FROM Sales s WHERE ${sold_condition} AND date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+    sales_count=$(db_scalar "SELECT COUNT(*) FROM Sales s WHERE ${sold_condition} AND date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
     units=$(db_scalar "SELECT COALESCE(SUM(si.quantity), 0)
                        FROM SaleItems si JOIN Sales s ON s.id = si.sale_id
-                       WHERE s.status = 'finished' AND date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
+                       WHERE ${sold_condition} AND date(s.timestamp) >= date('now', '-29 days');" 2>/dev/null || printf '0')
     active_products=$(db_scalar "SELECT COUNT(*) FROM Products WHERE active = 1;" 2>/dev/null || printf '0')
     inventory_value=$(db_scalar "SELECT COALESCE(SUM(stock * cost), 0) FROM Products WHERE active = 1;" 2>/dev/null || printf '0')
     customers=$(db_scalar "SELECT COUNT(*) FROM Customers;" 2>/dev/null || printf '0')
-    low_count=$(db_scalar "SELECT (SELECT COUNT(*) FROM Inputs WHERE stock <= min_stock_threshold) +
-                                  (SELECT COUNT(*) FROM Products WHERE active = 1 AND stock <= min_production_threshold);" 2>/dev/null || printf '0')
+    local stock_expr
+    stock_expr=$(_analytics_available_stock_sql "p")
+    low_count=$(db_scalar "SELECT (SELECT COUNT(*) FROM Inputs WHERE active = 1 AND stock <= min_stock_threshold) +
+                                  (SELECT COUNT(*) FROM Products p WHERE p.active = 1 AND (${stock_expr}) <= p.min_production_threshold);" 2>/dev/null || printf '0')
 
     revenue="${revenue:-0}"
     sales_count="${sales_count:-0}"
@@ -528,7 +568,7 @@ analytics_dashboard_json() {
     basket=$(analytics_basket_json)
     categories=$(analytics_categories_json)
 
-    products=$(api_list_products_json 1)
+    products=$(api_list_products_json 0)
     customers=$(api_list_customers_json)
     suppliers=$(api_list_suppliers_json)
     categories_options=$(api_list_categories_json)

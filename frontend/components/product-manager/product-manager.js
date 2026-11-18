@@ -46,12 +46,18 @@
             this._steps = this.querySelector('[data-product-steps]');
             this._stockForm = this.querySelector('[data-stock-form]');
             this._stockError = this.querySelector('[data-stock-error]');
+            this._productionModal = this.querySelector('#production-modal');
+            this._productionForm = this.querySelector('[data-production-form]');
+            this._productionError = this.querySelector('[data-production-error]');
+            this._productionInputs = this.querySelector('[data-production-inputs]');
+            this._productionProduct = null;
             this._catalog = [];
 
             this._bind();
             await this._loadMeta();
             await this._loadProductCatalog();
             await this._loadProducts();
+            await this._handleDeepLink();
         }
 
         _bind() {
@@ -83,6 +89,9 @@
             this.querySelector('[data-stock-consume]').addEventListener('change', () => this._renderConsumption());
             this.querySelector('[data-stock-quantity]').addEventListener('input', () => this._renderConsumption());
             this.querySelector('[data-stock-mode]').addEventListener('change', () => this._renderConsumption());
+            this._productionForm.addEventListener('submit', (event) => this._submitProduction(event));
+            this.querySelector('[data-production-cancel]').addEventListener('click', () => this._productionModal.close());
+            this.querySelector('[data-production-quantity]').addEventListener('input', () => this._renderProductionInputs());
             this._recipeEditor.addEventListener('input-created', () => {
                 this._loadMeta(true);
             });
@@ -165,7 +174,8 @@
         _populateFilters() {
             const categories = this._meta?.categories || [];
             this._categoryFilter.innerHTML = '<option value="0">Todas</option>' +
-                categories.map((category) => `<option value="${Number(category.id)}">${escape(category.name)}</option>`).join('');
+                categories.map((category) => `<option value="${Number(category.id)}">${escape(category.name)}</option>`).join('') +
+                '<option value="combos">Combos</option>';
             this.querySelector('[data-product-form-category]').innerHTML = categories.map((category) =>
                 `<option value="${Number(category.id)}">${escape(category.name)}</option>`).join('');
         }
@@ -257,6 +267,9 @@
                 const stockAction = product.is_combo == 1
                     ? ''
                     : '<button class="btn ghost small" type="button" data-detail-action="stock">Actualizar stock</button>';
+                const productionAction = product.is_combo == 1
+                    ? ''
+                    : '<button class="btn primary small" type="button" data-detail-action="produce">Registrar producción</button>';
 
                 this._detailModal.setTitle(product.name);
                 this._detailModal.setBody(`
@@ -293,6 +306,7 @@
                         </div>`}
                     <div class="detail-actions">
                         <button class="btn primary small" type="button" data-detail-action="edit">Editar producto</button>
+                        ${productionAction}
                         ${stockAction}
                         <button class="btn ghost small" type="button" data-detail-action="delete">Eliminar</button>
                     </div>
@@ -304,6 +318,7 @@
                         this._detailModal.close();
                         if (action === 'edit') this._openForm(product);
                         if (action === 'stock') this._openStock(product);
+                        if (action === 'produce') this._openProduction(product);
                         if (action === 'delete') this._deleteProduct(product);
                     });
                 });
@@ -414,6 +429,124 @@
                     ErpUI.toast('Producto creado', `${body.name} ya está disponible.`);
                 }
                 this._formModal.close();
+                await this._loadMeta(true);
+                await this._loadProducts();
+            } catch (requestError) {
+                error.textContent = requestError.message;
+                error.hidden = false;
+            } finally {
+                submit.disabled = false;
+            }
+        }
+
+        async _handleDeepLink() {
+            const params = new URLSearchParams(window.location.search);
+            const productId = Number(params.get('product'));
+            if (!productId) return;
+            try {
+                const product = await ErpUI.api(`/api/products/${productId}`);
+                if (params.get('produce') === '1' && Number(product.is_combo) !== 1) {
+                    await this._openProduction(product);
+                } else {
+                    await this._openDetail(productId);
+                    if (params.get('produce') === '1') {
+                        ErpUI.toast('Combo', 'El stock del combo se calcula desde sus componentes.', 'error');
+                    }
+                }
+                window.history.replaceState({}, '', '/inventario');
+            } catch (error) {
+                ErpUI.toast('No se pudo abrir el producto', error.message, 'error');
+            }
+        }
+
+        async _openProduction(product, quantity = null) {
+            if (Number(product.is_combo) === 1) {
+                ErpUI.toast('Combo', 'El stock del combo se calcula desde sus componentes.', 'error');
+                return;
+            }
+            this._productionProduct = product;
+            this._productionForm.reset();
+            this._productionError.hidden = true;
+            const deficit = Math.ceil((Number(product.min_threshold) || 0) - (Number(product.stock) || 0));
+            this.querySelector('[data-production-quantity]').value = String(quantity || Math.max(1, deficit));
+            this.querySelector('[data-production-cost]').value = String(Number(product.cost) || 0);
+            this.querySelector('[data-production-notes]').value = '';
+            this.querySelector('[data-production-note]').textContent =
+                `Stock actual: ${number(product.stock, 0)} unidades. Los insumos de la receta se descuentan al registrar el lote.`;
+            this._renderProductionInputs();
+            this._productionModal.setTitle(`Registrar producción · ${product.name}`);
+            await this._productionModal.open();
+        }
+
+        _renderProductionInputs() {
+            const product = this._productionProduct;
+            if (!product) return;
+            const quantity = Math.max(0, Number(this.querySelector('[data-production-quantity]').value) || 0);
+            const recipe = product.recipe || [];
+            if (!recipe.length) {
+                this._productionInputs.innerHTML = '<p class="form-note">Este producto no tiene receta asociada; el lote solo suma stock.</p>';
+                return;
+            }
+            this._productionInputs.innerHTML = recipe.map((item) => {
+                const total = Number(item.quantity_per_unit) * quantity;
+                const insufficient = Number(item.input_stock) < total;
+                return `
+                    <div class="stock-consumption-row" data-production-row="${Number(item.input_id)}">
+                        <div>
+                            <strong>${escape(item.input_name)}</strong>
+                            <small style="display:block;color:var(--text-dim)">${number(item.quantity_per_unit, 4)} ${escape(item.unit)} por unidad</small>
+                        </div>
+                        <input type="number" min="0" step="0.0001" value="${total.toFixed(4)}" data-production-input-qty>
+                        <small class="${insufficient ? 'negative' : ''}">${escape(item.unit)}${insufficient ? ' · insuficiente' : ''}</small>
+                    </div>`;
+            }).join('');
+        }
+
+        async _submitProduction(event) {
+            event.preventDefault();
+            if (!this._productionProduct) return;
+            const error = this._productionError;
+            const submit = this.querySelector('[data-production-submit]');
+            const quantity = Number(this.querySelector('[data-production-quantity]').value) || 0;
+            const unitCost = Number(this.querySelector('[data-production-cost]').value) || 0;
+            const notes = this.querySelector('[data-production-notes]').value.trim();
+            error.hidden = true;
+
+            if (!Number.isInteger(quantity) || quantity <= 0) {
+                error.textContent = 'Ingrese una cantidad entera mayor que cero.';
+                error.hidden = false;
+                return;
+            }
+            if (unitCost < 0) {
+                error.textContent = 'El costo unitario no puede ser negativo.';
+                error.hidden = false;
+                return;
+            }
+
+            const items = Array.from(this._productionInputs.querySelectorAll('[data-production-row]')).map((row) => ({
+                input_id: Number(row.dataset.productionRow),
+                quantity: Number(row.querySelector('[data-production-input-qty]').value) || 0
+            }));
+            if ((this._productionProduct.recipe || []).length && items.some((item) => !(item.quantity > 0))) {
+                error.textContent = 'Las cantidades de insumos deben ser mayores que cero.';
+                error.hidden = false;
+                return;
+            }
+
+            submit.disabled = true;
+            try {
+                const payload = await ErpUI.api('/api/production', {
+                    method: 'POST',
+                    body: {
+                        product_id: Number(this._productionProduct.id),
+                        quantity,
+                        unit_cost: unitCost,
+                        notes,
+                        items
+                    }
+                });
+                this._productionModal.close();
+                ErpUI.toast('Producción registrada', `${this._productionProduct.name}: lote #${payload.batch_id} con ${number(quantity, 0)} unidades.`);
                 await this._loadMeta(true);
                 await this._loadProducts();
             } catch (requestError) {

@@ -1,8 +1,11 @@
 <section class="manager">
     <div class="manager-toolbar card">
-        <div class="tabs-inline">
-            <button class="tab-inline active" type="button" data-purchase-view="recommendations">Reposición sugerida</button>
-            <button class="tab-inline" type="button" data-purchase-view="history">Historial de compras</button>
+        <div class="purchase-toolbar-main">
+            <div class="tabs-inline">
+                <button class="tab-inline active" type="button" data-purchase-view="recommendations">Reposición sugerida</button>
+                <button class="tab-inline" type="button" data-purchase-view="history">Historial de compras</button>
+            </div>
+            <button class="btn primary small" type="button" data-create-purchase>+ Nuevo pedido</button>
         </div>
         <div class="inline-actions" data-history-actions hidden>
             <label class="search-field">
@@ -12,6 +15,15 @@
             <label class="field compact-field">
                 <span>Proveedor</span>
                 <select data-purchase-supplier-filter><option value="0">Todos</option></select>
+            </label>
+            <label class="field compact-field">
+                <span>Estado</span>
+                <select data-purchase-status-filter>
+                    <option value="all">Todos</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="processing">En proceso</option>
+                    <option value="finished">Finalizado</option>
+                </select>
             </label>
         </div>
     </div>
@@ -28,6 +40,14 @@
             </div>
         </header>
         <p class="form-note">La cantidad sugerida combina la última compra con la proyección de consumo de 14 días. Puede ajustar cada cantidad antes de generar el mensaje.</p>
+        <div class="draft-banner" data-draft-banner hidden>
+            <div>
+                <span class="eyebrow">Pedido iniciado</span>
+                <strong data-draft-title></strong>
+                <small data-draft-subtitle></small>
+            </div>
+            <button class="btn ghost small" type="button" data-draft-clear>Ver todas las recomendaciones</button>
+        </div>
         <div class="entity-grid recommendation-grid" data-recommendation-list></div>
         <div class="empty-state" data-recommendation-empty hidden>
             <strong>No hay insumos críticos</strong>
@@ -39,36 +59,66 @@
         <header class="card-header">
             <div>
                 <span class="eyebrow">Trazabilidad</span>
-                <h3>Compras registradas</h3>
+                <h3>Pedidos de compra</h3>
             </div>
-            <span class="badge badge-soft" data-purchase-count>0 compras</span>
+            <span class="badge badge-soft" data-purchase-count>0 pedidos</span>
         </header>
         <div class="table-responsive">
             <table>
                 <thead>
-                    <tr><th>Compra</th><th>Fecha</th><th>Proveedor</th><th>Insumos</th><th>Unidades</th><th>Total</th></tr>
+                    <tr><th>Pedido</th><th>Fecha</th><th>Proveedor</th><th>Estado</th><th>Insumos</th><th>Unidades</th><th>Total</th></tr>
                 </thead>
                 <tbody data-purchase-body></tbody>
             </table>
         </div>
         <div class="empty-state" data-purchase-empty hidden>
-            <strong>No hay compras para mostrar</strong>
-            <span>Ajuste los filtros o registre una compra desde la reposición sugerida.</span>
+            <strong>No hay pedidos para mostrar</strong>
+            <span>Ajuste los filtros o cree un pedido desde “+ Nuevo pedido”.</span>
         </div>
         <erp-pagination data-purchase-pagination></erp-pagination>
     </article>
 </section>
 
 <erp-modal id="order-modal" title="Pedido generado" size="wide">
+    <p class="form-note">El pedido se guardará como <b>Pendiente</b>. El stock se actualizará recién al finalizarlo desde el historial.</p>
     <div class="order-summary" data-order-content></div>
     <p class="form-error" data-order-error hidden></p>
     <div class="form-actions">
         <button class="btn ghost" type="button" data-order-cancel>Cerrar</button>
         <button class="btn ghost" type="button" data-copy-order>Copiar mensaje</button>
-        <button class="btn primary" type="button" data-register-order>Registrar compra</button>
+        <button class="btn primary" type="button" data-register-order>Registrar pedido</button>
     </div>
 </erp-modal>
 
-<erp-modal id="purchase-detail-modal" title="Detalle de compra" size="wide"></erp-modal>
+<erp-modal id="purchase-form-modal" title="Nuevo pedido" size="wide">
+    <form class="form-stack" data-purchase-form>
+        <p class="form-error" data-purchase-form-error hidden></p>
+        <div class="form-grid">
+            <label class="field">
+                <span>Proveedor</span>
+                <select data-purchase-form-supplier required></select>
+            </label>
+            <label class="field span-2">
+                <span>Nota</span>
+                <textarea data-purchase-form-notes rows="2" placeholder="Referencia interna, condiciones o aclaraciones…"></textarea>
+            </label>
+        </div>
+        <div class="purchase-form-items-head">
+            <span>Insumos del pedido</span>
+            <button class="btn ghost small" type="button" data-purchase-form-add-item>+ Agregar insumo</button>
+        </div>
+        <div class="purchase-form-items" data-purchase-form-items></div>
+        <div class="purchase-form-total">
+            <span>Total estimado</span>
+            <strong data-purchase-form-total>$0.00</strong>
+        </div>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-purchase-form-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-purchase-form-submit>Crear pedido</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="purchase-detail-modal" title="Detalle de pedido" size="wide"></erp-modal>
 
 <erp-invoice-generator id="purchase-invoice"></erp-invoice-generator>

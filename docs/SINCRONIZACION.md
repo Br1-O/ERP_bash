@@ -8,7 +8,7 @@ encabezado. Solo está disponible para usuarios con rol `admin`.
 1. El administrador guarda la URL del endpoint y, opcionalmente, un token.
 2. El ERP construye un snapshot JSON completo de las tablas de negocio.
 3. Se compone la URL:
-   `https://host/ruta?source=sqlite&schema_version=5&mode=snapshot`
+   `https://host/ruta?source=sqlite&schema_version=7&mode=snapshot`
 4. Se envía `POST` con:
    - `Content-Type: application/json`
    - `Authorization: Bearer <token>`
@@ -25,7 +25,7 @@ filas porque las tablas usan IDs estables y `ON CONFLICT (id) DO UPDATE`.
 ```json
 {
   "source": "sqlite",
-  "schema_version": 5,
+  "schema_version": 7,
   "generated_at": "2026-11-11 18:30:00",
   "last_journal_id": 1234,
   "tables": {
@@ -52,9 +52,12 @@ filas porque las tablas usan IDs estables y `ON CONFLICT (id) DO UPDATE`.
 
 No se envían usuarios, sesiones, configuración local ni la bitácora de
 sincronización. Las ventas incluyen subtotal, tipo/valor de descuento, descuento,
-total, estado, `stock_applied` y `order_type`. Los productos incluyen
-`recipe_description` e `is_combo`; los pasos de receta, componentes de combos y
-datos de empresa se envían en sus propias tablas.
+total, estado, `stock_applied`, `order_type`, `order_stage` y los campos de
+anulación (`cancel_reason`, `cancelled_by`, `cancel_authorized_by`,
+`cancelled_at`). Las compras incluyen `status` y
+`stock_applied`; clientes y proveedores incluyen `active`. Los productos
+incluyen `recipe_description` e `is_combo`; los pasos de receta, componentes de
+combos y datos de empresa se envían en sus propias tablas.
 
 ## Offline-first
 

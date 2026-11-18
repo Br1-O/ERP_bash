@@ -446,21 +446,30 @@
             : 'La probabilidad de saturación horaria es contenida con la capacidad actual.');
     }
 
+    function stageLabel(status) {
+        const labels = {
+            draft: 'Borrador', pending: 'Pendiente', preparing: 'En preparación',
+            confirmed: 'Confirmado', paid: 'Pagado', delivered: 'Entregado', cancel: 'Anulado'
+        };
+        return labels[status] || status || '—';
+    }
+
     function renderRecentSales() {
         const body = $('recent-sales-body');
         if (!body) return;
         const sales = ERP.recent_sales || [];
         if (!sales.length) {
-            body.innerHTML = '<tr><td colspan="5"><div class="empty-state">Sin ventas registradas.</div></td></tr>';
+            body.innerHTML = '<tr><td colspan="6"><div class="empty-state">Sin ventas registradas.</div></td></tr>';
             return;
         }
         body.innerHTML = sales.map((sale) => `
             <tr>
-                <td class="mono">#${escapeHtml(sale.id)}</td>
+                <td class="mono">#${escapeHtml(sale.id)}<br><small class="muted">${escapeHtml(sale.order_type === 'direct' ? 'Venta directa' : 'Pedido')} · ${escapeHtml(stageLabel(sale.status))}</small></td>
                 <td>${escapeHtml(sale.customer)}</td>
                 <td><span class="badge badge-soft">${escapeHtml(sale.payment)}</span></td>
                 <td>${fmtNumber(sale.units, 0)}</td>
                 <td class="text-right positive">${fmtMoney(sale.total)}</td>
+                <td><button class="btn ghost small" type="button" data-void-sale="${Number(sale.id)}" data-void-type="${escapeHtml(sale.order_type)}">Anular</button></td>
             </tr>
         `).join('');
     }
@@ -497,14 +506,14 @@
                 inputContainer.innerHTML = '<div class="empty-state"><strong>Insumos en nivel seguro</strong><span>No hay recompras críticas por ahora.</span></div>';
             } else {
                 inputContainer.innerHTML = alerts.inputs.map((item) => `
-                    <div class="alert-row">
+                    <a class="alert-row alert-link" href="/compras?input=${Number(item.id)}" title="Preparar pedido de ${escapeHtml(item.name)}">
                         <span class="alert-icon">!</span>
                         <div>
                             <strong>${escapeHtml(item.name)}</strong>
                             <small>Umbral ${fmtNumber(item.threshold)} ${escapeHtml(item.unit)} · déficit ${fmtNumber(item.deficit)} ${escapeHtml(item.unit)}</small>
                         </div>
                         <span class="alert-value">${fmtNumber(item.stock)} ${escapeHtml(item.unit)}</span>
-                    </div>
+                    </a>
                 `).join('');
             }
         }
@@ -513,16 +522,24 @@
             if (!alerts.products.length) {
                 productContainer.innerHTML = '<div class="empty-state"><strong>Producción al día</strong><span>Ningún producto requiere lote urgente.</span></div>';
             } else {
-                productContainer.innerHTML = alerts.products.map((item) => `
-                    <div class="alert-row">
-                        <span class="alert-icon">↺</span>
-                        <div>
-                            <strong>${escapeHtml(item.name)}</strong>
-                            <small>Mínimo de producción ${fmtNumber(item.threshold)} u. · faltan ${fmtNumber(item.deficit)} u.</small>
-                        </div>
-                        <span class="alert-value">${fmtNumber(item.stock)} u.</span>
-                    </div>
-                `).join('');
+                productContainer.innerHTML = alerts.products.map((item) => {
+                    const combo = Number(item.is_combo) === 1;
+                    const href = combo
+                        ? `/inventario?product=${Number(item.id)}`
+                        : `/inventario?product=${Number(item.id)}&produce=1`;
+                    const detail = combo
+                        ? `Disponibles ${fmtNumber(item.stock)} u. · faltan ${fmtNumber(item.deficit)} u.`
+                        : `Mínimo de producción ${fmtNumber(item.threshold)} u. · faltan ${fmtNumber(item.deficit)} u.`;
+                    return `
+                        <a class="alert-row alert-link" href="${href}" title="${combo ? 'Ver componentes del combo' : 'Registrar producción'}">
+                            <span class="alert-icon">↺</span>
+                            <div>
+                                <strong>${escapeHtml(item.name)}</strong>
+                                <small>${detail}</small>
+                            </div>
+                            <span class="alert-value">${fmtNumber(item.stock)} u.</span>
+                        </a>`;
+                }).join('');
             }
         }
     }
@@ -535,18 +552,23 @@
             body.innerHTML = '<tr><td colspan="8"><div class="empty-state">Sin datos de demanda.</div></td></tr>';
             return;
         }
-        body.innerHTML = rows.map((item) => `
-            <tr>
-                <td>${escapeHtml(item.name)}</td>
-                <td>${fmtNumber(item.stock)}</td>
-                <td>${fmtNumber(item.mean, 3)}</td>
-                <td>${fmtNumber(item.sd, 3)}</td>
-                <td>${fmtPct(item.cv, 1)}</td>
-                <td>${fmtNumber(item.safety, 2)}</td>
-                <td>${fmtNumber(item.reorder, 2)}</td>
-                <td><span class="badge ${item.critical ? 'badge-danger' : 'badge-success'}">${item.critical ? 'Reponer' : 'Cubierto'}</span></td>
-            </tr>
-        `).join('');
+        body.innerHTML = rows.map((item) => {
+            const combo = Number(item.is_combo) === 1;
+            const href = combo
+                ? `/inventario?product=${Number(item.id)}`
+                : `/inventario?product=${Number(item.id)}&produce=1`;
+            return `
+                <tr class="clickable-row" data-href="${href}">
+                    <td><a class="table-link" href="${href}">${escapeHtml(item.name)}</a></td>
+                    <td>${fmtNumber(item.stock)}</td>
+                    <td>${fmtNumber(item.mean, 3)}</td>
+                    <td>${fmtNumber(item.sd, 3)}</td>
+                    <td>${fmtPct(item.cv, 1)}</td>
+                    <td>${fmtNumber(item.safety, 2)}</td>
+                    <td>${fmtNumber(item.reorder, 2)}</td>
+                    <td><span class="badge ${item.critical ? 'badge-danger' : 'badge-success'}">${item.critical ? 'Reponer' : 'Cubierto'}</span></td>
+                </tr>`;
+        }).join('');
     }
 
     function renderReorderInputs() {
@@ -557,16 +579,18 @@
             body.innerHTML = '<tr><td colspan="6"><div class="empty-state">Sin datos de consumo.</div></td></tr>';
             return;
         }
-        body.innerHTML = rows.map((item) => `
-            <tr>
-                <td>${escapeHtml(item.name)}</td>
-                <td>${fmtNumber(item.stock)} ${escapeHtml(item.unit)}</td>
-                <td>${fmtNumber(item.mean, 3)}</td>
-                <td>${fmtPct(item.cv, 1)}</td>
-                <td><span class="badge badge-soft">${fmtNumber(item.reorder, 2)}</span></td>
-                <td><span class="badge ${item.critical ? 'badge-danger' : 'badge-success'}">${item.critical ? 'Reponer' : 'Cubierto'}</span></td>
-            </tr>
-        `).join('');
+        body.innerHTML = rows.map((item) => {
+            const href = `/compras?input=${Number(item.id)}`;
+            return `
+                <tr class="clickable-row" data-href="${href}">
+                    <td><a class="table-link" href="${href}">${escapeHtml(item.name)}</a></td>
+                    <td>${fmtNumber(item.stock)} ${escapeHtml(item.unit)}</td>
+                    <td>${fmtNumber(item.mean, 3)}</td>
+                    <td>${fmtPct(item.cv, 1)}</td>
+                    <td><span class="badge badge-soft">${fmtNumber(item.reorder, 2)}</span></td>
+                    <td><span class="badge ${item.critical ? 'badge-danger' : 'badge-success'}">${item.critical ? 'Reponer' : 'Cubierto'}</span></td>
+                </tr>`;
+        }).join('');
     }
 
     function renderCostStats() {
@@ -678,16 +702,24 @@
 
         if (combos) {
             combos.innerHTML = (basket.combos || []).length
-                ? basket.combos.map((combo) => `
+                ? basket.combos.map((combo) => {
+                    const canCreate = Number(combo.a_id) > 0 && Number(combo.b_id) > 0;
+                    return `
                     <div class="combo-card">
-                        <strong>${escapeHtml(combo.a_name)} + ${escapeHtml(combo.b_name)}</strong>
+                        <div class="combo-card-header">
+                            <strong>${escapeHtml(combo.a_name)} + ${escapeHtml(combo.b_name)}</strong>
+                            ${canCreate ? `<button class="btn primary small" type="button" data-combo-create
+                                data-a-id="${Number(combo.a_id)}" data-b-id="${Number(combo.b_id)}"
+                                data-a-name="${escapeHtml(combo.a_name)}" data-b-name="${escapeHtml(combo.b_name)}">Crear combo</button>` : ''}
+                        </div>
                         <span class="combo-equation">y = ${fmtNumber(combo.intercept, 2)} + ${fmtNumber(combo.slope, 2)} · x</span>
                         <div class="combo-meta">
                             <span>r = ${fmtNumber(combo.corr, 2)}</span>
                             <span>${fmtNumber(combo.cooccurrence, 0)} ventas conjuntas</span>
                         </div>
                     </div>
-                `).join('')
+                `;
+                }).join('')
                 : '<div class="empty-state">Aún no se detectan combinaciones positivas.</div>';
         }
 
@@ -706,22 +738,60 @@
         }
     }
 
+    const catalogState = {
+        search: '',
+        category: '',
+        status: 'active',
+        page: 1,
+        pageSize: 8
+    };
+
+    function catalogRows() {
+        const term = normalize(catalogState.search);
+        const rows = (ERP.products || []).filter((product) => {
+            const isCombo = Number(product.is_combo) === 1;
+            if (catalogState.category && String(product.category_id) !== String(catalogState.category)) return false;
+            if (term && !normalize(`${product.name} ${product.category}`).includes(term)) return false;
+            if (catalogState.status === 'active' && Number(product.active) !== 1) return false;
+            if (catalogState.status === 'inactive' && Number(product.active) === 1) return false;
+            if (catalogState.status === 'low' && !(Number(product.stock) <= Number(product.min_threshold))) return false;
+            if (catalogState.status === 'combos' && !isCombo) return false;
+            return true;
+        });
+        rows.sort((a, b) => String(a.name).localeCompare(String(b.name), 'es'));
+        return rows;
+    }
+
     function renderCatalog() {
         const body = $('products-table-body');
         if (!body) return;
-        const products = ERP.products || [];
-        text('catalog-count', `${fmtNumber(products.length, 0)} productos`);
-        if (!products.length) {
-            body.innerHTML = '<tr><td colspan="6"><div class="empty-state">Sin productos en el catálogo.</div></td></tr>';
+        const rows = catalogRows();
+        const pages = Math.max(1, Math.ceil(rows.length / catalogState.pageSize));
+        catalogState.page = Math.min(Math.max(1, catalogState.page), pages);
+        const start = (catalogState.page - 1) * catalogState.pageSize;
+        const visible = rows.slice(start, start + catalogState.pageSize);
+
+        text('catalog-count', `${fmtNumber(rows.length, 0)} producto${rows.length === 1 ? '' : 's'}`);
+        const empty = $('catalog-empty');
+        if (empty) empty.hidden = rows.length > 0;
+        const pagination = $('catalog-pagination');
+        if (pagination && typeof pagination.setData === 'function') pagination.setData(catalogState.page, pages);
+
+        if (!visible.length) {
+            body.innerHTML = '';
             return;
         }
-        body.innerHTML = products.map((product) => {
-            const badge = Number(product.seasonal) === 1
-                ? '<span class="badge badge-accent">Estacional</span>'
-                : '<span class="badge badge-success">Activo</span>';
+        body.innerHTML = visible.map((product) => {
+            const isCombo = Number(product.is_combo) === 1;
+            const inactive = Number(product.active) === 0;
+            let badge = '<span class="badge badge-success">Activo</span>';
+            if (inactive) badge = '<span class="badge badge-danger">Inactivo</span>';
+            else if (Number(product.seasonal) === 1) badge = '<span class="badge badge-accent">Estacional</span>';
+            const comboBadge = isCombo ? '<span class="badge badge-accent">Combo</span>' : '';
             return `
                 <tr>
-                    <td>${escapeHtml(product.name)}</td>
+                    <td><a class="table-link" href="/inventario?product=${Number(product.id)}"
+                           data-product-open="${Number(product.id)}">${escapeHtml(product.name)}</a> ${comboBadge}</td>
                     <td>${escapeHtml(product.category)}</td>
                     <td>${fmtNumber(product.stock)} u.</td>
                     <td>${fmtMoney(product.cost)}</td>
@@ -730,6 +800,84 @@
                 </tr>
             `;
         }).join('');
+    }
+
+    function initCatalog() {
+        const search = $('catalog-search');
+        const category = $('catalog-category');
+        const status = $('catalog-state');
+        const body = $('products-table-body');
+        if (!body) return;
+
+        if (category) {
+            const seen = new Map();
+            (ERP.products || []).forEach((product) => {
+                const id = String(product.category_id || '');
+                if (!id || seen.has(id)) return;
+                seen.set(id, product.category || 'Sin categoría');
+            });
+            const options = Array.from(seen.entries())
+                .sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'es'))
+                .map(([id, name]) => `<option value="${escapeHtml(id)}">${escapeHtml(name)}</option>`)
+                .join('');
+            category.insertAdjacentHTML('beforeend', options);
+        }
+
+        if (search) {
+            search.addEventListener('input', () => {
+                catalogState.search = search.value;
+                catalogState.page = 1;
+                renderCatalog();
+            });
+        }
+        category?.addEventListener('change', () => {
+            catalogState.category = category.value;
+            catalogState.page = 1;
+            renderCatalog();
+        });
+        status?.addEventListener('change', () => {
+            catalogState.status = status.value;
+            catalogState.page = 1;
+            renderCatalog();
+        });
+        $('catalog-pagination')?.addEventListener('page-change', (event) => {
+            catalogState.page = event.detail.page;
+            renderCatalog();
+        });
+        body.addEventListener('click', (event) => {
+            const link = event.target.closest('[data-product-open]');
+            if (!link) return;
+            const detail = document.querySelector('erp-product-detail');
+            if (!detail || typeof detail.open !== 'function') return;
+            event.preventDefault();
+            detail.open(link.dataset.productOpen);
+        });
+    }
+
+    function initComboActions() {
+        const list = $('combos-list');
+        if (!list) return;
+        list.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-combo-create]');
+            if (!button) return;
+            const builder = document.querySelector('erp-combo-builder');
+            if (!builder || typeof builder.open !== 'function') {
+                toast('Creador no disponible', 'No se pudo abrir el creador de combos.', 'error');
+                return;
+            }
+            builder.open({
+                products: [
+                    { id: Number(button.dataset.aId), name: button.dataset.aName, quantity: 1 },
+                    { id: Number(button.dataset.bId), name: button.dataset.bName, quantity: 1 }
+                ]
+            });
+        });
+        document.addEventListener('erp:combo-created', async () => {
+            try {
+                ERP.products = await ErpUI.api('/api/products');
+                renderCatalog();
+            } catch (error) {}
+        });
     }
 
     function renderContacts(searchTerm = '') {
@@ -870,7 +1018,8 @@
         const row = document.createElement('div');
         row.className = 'sale-item-row';
 
-        const options = (ERP.products || []).filter((product) => Number(product.stock) > 0).map((product) => {
+        const options = (ERP.products || []).filter((product) =>
+            Number(product.active) === 1 && Number(product.stock) > 0).map((product) => {
             const selected = String(product.id) === String(productId) ? ' selected' : '';
             return `<option value="${product.id}" data-price="${Number(product.price) || 0}" data-stock="${Number(product.stock) || 0}"${selected}>${escapeHtml(product.name)} · ${fmtMoney(product.price)} · ${fmtNumber(product.stock)} u.</option>`;
         }).join('');
@@ -975,7 +1124,8 @@
     function addSaleItem(defaultId) {
         const container = $('sale-items');
         if (!container) return;
-        const firstAvailable = (ERP.products || []).find((product) => Number(product.stock) > 0);
+        const firstAvailable = (ERP.products || []).find((product) =>
+            Number(product.active) === 1 && Number(product.stock) > 0);
         if (!firstAvailable) {
             toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
             return;
@@ -1084,6 +1234,97 @@
                 button.textContent = 'Registrar venta';
             }
         }
+    }
+
+    let voidSale = null;
+
+    function openVoidModal(sale) {
+        const modal = $('void-sale-modal');
+        if (!modal || !sale) return;
+        voidSale = sale;
+        $('void-sale-summary').textContent = `Se anulará ${sale.order_type === 'direct' ? 'la venta' : 'el pedido'} #${sale.id} por ${fmtMoney(sale.total)}. El stock se restituirá automáticamente si estaba aplicado.`;
+        $('void-sale-reason').value = '';
+        $('void-sale-pin').value = '';
+        const error = $('void-sale-error');
+        error.hidden = true;
+        error.textContent = '';
+        modal.hidden = false;
+        window.setTimeout(() => $('void-sale-reason')?.focus(), 60);
+    }
+
+    function closeVoidModal() {
+        const modal = $('void-sale-modal');
+        if (modal) modal.hidden = true;
+        voidSale = null;
+    }
+
+    async function submitVoidSale() {
+        if (!voidSale) return;
+        const reason = ($('void-sale-reason')?.value || '').trim();
+        const pin = $('void-sale-pin')?.value || '';
+        const error = $('void-sale-error');
+        const button = $('submit-void-sale');
+        if (reason.length < 3 || reason.length > 300) {
+            error.textContent = 'El motivo debe tener entre 3 y 300 caracteres.';
+            error.hidden = false;
+            return;
+        }
+        if (!pin) {
+            error.textContent = 'Ingrese el PIN de autorización.';
+            error.hidden = false;
+            return;
+        }
+        button.disabled = true;
+        button.textContent = 'Anulando…';
+        error.hidden = true;
+        try {
+            const endpoint = voidSale.order_type === 'direct'
+                ? `/api/sales/${voidSale.id}/cancel`
+                : `/api/orders/${voidSale.id}/cancel`;
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason, pin })
+            });
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.ok) {
+                throw new Error(payload.error || 'No se pudo anular la operación.');
+            }
+            const cancelledId = voidSale.id;
+            closeVoidModal();
+            toast('Operación anulada', `El registro #${cancelledId} quedó anulado y auditado.`);
+            window.setTimeout(() => window.location.reload(), 900);
+        } catch (requestError) {
+            error.textContent = requestError.message;
+            error.hidden = false;
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Anular venta';
+        }
+    }
+
+    function initVoidModal() {
+        const modal = $('void-sale-modal');
+        if (!modal) return;
+        $('close-void-sale-modal')?.addEventListener('click', closeVoidModal);
+        $('cancel-void-sale')?.addEventListener('click', closeVoidModal);
+        $('submit-void-sale')?.addEventListener('click', submitVoidSale);
+        modal.addEventListener('click', (event) => {
+            if (event.target === modal) closeVoidModal();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !modal.hidden) closeVoidModal();
+        });
+        document.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-void-sale]');
+            if (!button) return;
+            const sale = (ERP?.recent_sales || []).find((item) => Number(item.id) === Number(button.dataset.voidSale));
+            if (sale) openVoidModal(sale);
+        });
     }
 
     function initSaleModal() {
@@ -1289,6 +1530,14 @@
         search.addEventListener('input', () => renderContacts(search.value));
     }
 
+    function initRowLinks() {
+        document.addEventListener('click', (event) => {
+            const row = event.target.closest('[data-href]');
+            if (!row || event.target.closest('a, button, input, select, textarea, label')) return;
+            window.location.href = row.dataset.href;
+        });
+    }
+
     function initDashboard() {
         renderKpis();
         renderDailyStats();
@@ -1308,7 +1557,11 @@
 
         initTabs();
         initSaleModal();
+        initVoidModal();
         initContacts();
+        initRowLinks();
+        initCatalog();
+        initComboActions();
 
         let resizeTimer = null;
         window.addEventListener('resize', () => {

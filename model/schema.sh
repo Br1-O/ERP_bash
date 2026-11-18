@@ -67,7 +67,111 @@ _schema_migrate_legacy_columns() {
         if [[ "${has_column:-0}" == "0" ]]; then
             db_exec "ALTER TABLE Sales ADD COLUMN order_type TEXT NOT NULL DEFAULT 'direct' CHECK (order_type IN ('direct', 'order'));" || return 1
         fi
+        local sales_added_stage=0
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'order_stage';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN order_stage TEXT NOT NULL DEFAULT 'delivered' CHECK (order_stage IN ('draft', 'pending', 'preparing', 'confirmed', 'paid', 'delivered', 'cancel'));" || return 1
+            sales_added_stage=1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'cancel_reason';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN cancel_reason TEXT;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'cancelled_by';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN cancelled_by TEXT;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'cancel_authorized_by';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN cancel_authorized_by TEXT;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'cancelled_at';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN cancelled_at DATETIME;" || return 1
+        fi
+        if (( sales_added_stage == 1 )); then
+            db_exec "UPDATE Sales
+                        SET order_stage = CASE
+                            WHEN status = 'cancel' THEN 'cancel'
+                            WHEN order_type = 'direct' THEN 'delivered'
+                            WHEN status = 'finished' THEN 'delivered'
+                            ELSE 'pending'
+                        END
+                      WHERE order_type = 'order';" || return 1
+        fi
+        db_exec "UPDATE Sales SET order_stage = 'cancel' WHERE status = 'cancel' AND order_stage <> 'cancel';" || return 1
         db_exec "UPDATE Sales SET stock_applied = 1 WHERE status = 'finished';" || return 1
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Users';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        local users_added_pin=0
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Users') WHERE name = 'pin_hash';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Users ADD COLUMN pin_hash TEXT;" || return 1
+            users_added_pin=1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Users') WHERE name = 'pin_salt';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Users ADD COLUMN pin_salt TEXT;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Users') WHERE name = 'can_view_metrics';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Users ADD COLUMN can_view_metrics INTEGER NOT NULL DEFAULT 0 CHECK (can_view_metrics IN (0, 1));" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Users') WHERE name = 'can_manage_stock';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Users ADD COLUMN can_manage_stock INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_stock IN (0, 1));" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Users') WHERE name = 'active';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Users ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));" || return 1
+        fi
+        db_exec "UPDATE Users SET can_view_metrics = 1, can_manage_stock = 1 WHERE role = 'admin';" || return 1
+        if (( users_added_pin == 1 )); then
+            local admin_pin_salt admin_pin_hash
+            admin_pin_salt="c9d8e7f6a5b4"
+            admin_pin_hash=$(_schema_hash_password "${admin_pin_salt}:admin123")
+            db_exec "UPDATE Users
+                        SET pin_hash = $(db_quote "${admin_pin_hash}"),
+                            pin_salt = $(db_quote "${admin_pin_salt}")
+                      WHERE role = 'admin' AND (pin_hash IS NULL OR pin_hash = '');" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Suppliers';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Suppliers') WHERE name = 'active';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Suppliers ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Customers';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Customers') WHERE name = 'active';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Customers ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1));" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Purchases';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Purchases') WHERE name = 'stock_applied';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Purchases ADD COLUMN stock_applied INTEGER NOT NULL DEFAULT 0 CHECK (stock_applied IN (0, 1));" || return 1
+        fi
+        db_exec "UPDATE Purchases
+                    SET status = CASE
+                        WHEN status IN ('Recibida', 'recibida', 'received', 'Finalizada', 'finalizada', 'finished') THEN 'finished'
+                        WHEN status IN ('En proceso', 'en proceso', 'processing') THEN 'processing'
+                        WHEN status IN ('Pendiente', 'pendiente', 'pending') THEN 'pending'
+                        ELSE status
+                    END
+                  WHERE status IN ('Recibida', 'recibida', 'received', 'Finalizada', 'finalizada', 'finished',
+                                   'En proceso', 'en proceso', 'processing',
+                                   'Pendiente', 'pendiente', 'pending');" || return 1
+        db_exec "UPDATE Purchases SET stock_applied = 1 WHERE status = 'finished';" || return 1
     fi
     return 0
 }
@@ -87,7 +191,8 @@ CREATE TABLE IF NOT EXISTS Suppliers (
     contact_person TEXT,
     phone TEXT,
     email TEXT,
-    address TEXT
+    address TEXT,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS Customers (
@@ -95,7 +200,8 @@ CREATE TABLE IF NOT EXISTS Customers (
     name TEXT NOT NULL CHECK (length(name) <= 80),
     type TEXT NOT NULL DEFAULT 'Minorista' CHECK (type IN ('Mayorista', 'Minorista')),
     phone TEXT,
-    email TEXT
+    email TEXT,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS Inputs (
@@ -138,7 +244,12 @@ CREATE TABLE IF NOT EXISTS Sales (
     notes TEXT,
     created_by TEXT NOT NULL DEFAULT 'sistema',
     stock_applied INTEGER NOT NULL DEFAULT 0 CHECK (stock_applied IN (0, 1)),
-    order_type TEXT NOT NULL DEFAULT 'direct' CHECK (order_type IN ('direct', 'order'))
+    order_type TEXT NOT NULL DEFAULT 'direct' CHECK (order_type IN ('direct', 'order')),
+    order_stage TEXT NOT NULL DEFAULT 'delivered' CHECK (order_stage IN ('draft', 'pending', 'preparing', 'confirmed', 'paid', 'delivered', 'cancel')),
+    cancel_reason TEXT,
+    cancelled_by TEXT,
+    cancel_authorized_by TEXT,
+    cancelled_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS SaleItems (
@@ -227,8 +338,9 @@ CREATE TABLE IF NOT EXISTS Purchases (
     supplier_id INTEGER REFERENCES Suppliers(id),
     total_amount REAL NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
     notes TEXT,
-    status TEXT NOT NULL DEFAULT 'Recibida',
-    created_by TEXT NOT NULL DEFAULT 'sistema'
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'finished')),
+    created_by TEXT NOT NULL DEFAULT 'sistema',
+    stock_applied INTEGER NOT NULL DEFAULT 0 CHECK (stock_applied IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS PurchaseItems (
@@ -245,6 +357,11 @@ CREATE TABLE IF NOT EXISTS Users (
     password_hash TEXT NOT NULL,
     salt TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'admin',
+    pin_hash TEXT,
+    pin_salt TEXT,
+    can_view_metrics INTEGER NOT NULL DEFAULT 0 CHECK (can_view_metrics IN (0, 1)),
+    can_manage_stock INTEGER NOT NULL DEFAULT 0 CHECK (can_manage_stock IN (0, 1)),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -281,7 +398,9 @@ CREATE INDEX IF NOT EXISTS idx_combo_combo ON ComboItems(combo_product_id);
 CREATE INDEX IF NOT EXISTS idx_combo_component ON ComboItems(component_product_id);
 CREATE INDEX IF NOT EXISTS idx_sales_status ON Sales(status);
 CREATE INDEX IF NOT EXISTS idx_sales_order_type_status ON Sales(order_type, status);
+CREATE INDEX IF NOT EXISTS idx_sales_order_stage ON Sales(order_stage);
 CREATE INDEX IF NOT EXISTS idx_purchases_timestamp ON Purchases(timestamp);
+CREATE INDEX IF NOT EXISTS idx_purchases_status ON Purchases(status);
 CREATE INDEX IF NOT EXISTS idx_purchaseitems_purchase ON PurchaseItems(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_purchaseitems_input ON PurchaseItems(input_id);
 CREATE INDEX IF NOT EXISTS idx_synclog_timestamp ON SyncLog(timestamp);
@@ -312,7 +431,12 @@ DROP TRIGGER IF EXISTS trg_batchinput_after_insert;
 DROP TRIGGER IF EXISTS trg_purchases_ai;
 DROP TRIGGER IF EXISTS trg_purchases_au;
 DROP TRIGGER IF EXISTS trg_purchases_ad;
+DROP TRIGGER IF EXISTS trg_purchases_status_finish_bi;
+DROP TRIGGER IF EXISTS trg_purchases_status_finish_af;
+DROP TRIGGER IF EXISTS trg_purchases_status_unapply_bi;
+DROP TRIGGER IF EXISTS trg_purchases_status_unapply_af;
 DROP TRIGGER IF EXISTS trg_purchaseitems_stock;
+DROP TRIGGER IF EXISTS trg_purchaseitems_delete_bi;
 DROP TRIGGER IF EXISTS trg_purchaseitems_ai;
 DROP TRIGGER IF EXISTS trg_purchaseitems_ad;
 DROP TRIGGER IF EXISTS trg_recipe_ai;
@@ -386,7 +510,7 @@ CREATE TRIGGER trg_customers_au AFTER UPDATE ON Customers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'UPDATE', 'Customers', 'id=' || NEW.id || ';name=' || NEW.name, 'DONE');
+            'UPDATE', 'Customers', 'id=' || NEW.id || ';name=' || NEW.name || ';active=' || NEW.active, 'DONE');
 END;
 
 CREATE TRIGGER trg_customers_ad AFTER DELETE ON Customers
@@ -407,7 +531,7 @@ CREATE TRIGGER trg_suppliers_au AFTER UPDATE ON Suppliers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'UPDATE', 'Suppliers', 'id=' || NEW.id || ';name=' || NEW.name, 'DONE');
+            'UPDATE', 'Suppliers', 'id=' || NEW.id || ';name=' || NEW.name || ';active=' || NEW.active, 'DONE');
 END;
 
 CREATE TRIGGER trg_suppliers_ad AFTER DELETE ON Suppliers
@@ -703,18 +827,94 @@ BEGIN
             'DONE');
 END;
 
+CREATE TRIGGER trg_purchases_status_finish_bi BEFORE UPDATE OF status ON Purchases
+WHEN NEW.status = 'finished' AND OLD.status <> 'finished' AND COALESCE(NEW.stock_applied, 0) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'El pedido de compra no tiene insumos para finalizar')
+    WHERE NOT EXISTS (SELECT 1 FROM PurchaseItems WHERE purchase_id = NEW.id);
+END;
+
+CREATE TRIGGER trg_purchases_status_finish_af AFTER UPDATE OF status ON Purchases
+WHEN NEW.status = 'finished' AND OLD.status <> 'finished' AND COALESCE(NEW.stock_applied, 0) = 0
+BEGIN
+    UPDATE Inputs
+       SET stock = stock + (
+               SELECT COALESCE(SUM(pi.quantity), 0)
+               FROM PurchaseItems pi
+               WHERE pi.purchase_id = NEW.id AND pi.input_id = Inputs.id
+           ),
+           cost = COALESCE((
+               SELECT pi.unit_cost
+               FROM PurchaseItems pi
+               WHERE pi.purchase_id = NEW.id AND pi.input_id = Inputs.id
+               ORDER BY pi.id DESC
+               LIMIT 1
+           ), cost)
+     WHERE id IN (SELECT input_id FROM PurchaseItems WHERE purchase_id = NEW.id);
+
+    UPDATE Purchases SET stock_applied = 1 WHERE id = NEW.id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_FINISHED', 'Purchases',
+            'purchase_id=' || NEW.id || ';status=' || NEW.status,
+            'DONE');
+END;
+
+CREATE TRIGGER trg_purchases_status_unapply_bi BEFORE UPDATE OF status ON Purchases
+WHEN NEW.status <> 'finished' AND OLD.status = 'finished' AND OLD.stock_applied = 1
+BEGIN
+    SELECT RAISE(ABORT, 'No se puede reabrir el pedido: el stock recibido ya fue consumido')
+    WHERE EXISTS (
+        SELECT 1
+        FROM Inputs i
+        JOIN (
+            SELECT input_id, SUM(quantity) AS qty
+            FROM PurchaseItems
+            WHERE purchase_id = OLD.id
+            GROUP BY input_id
+        ) needs ON needs.input_id = i.id
+        WHERE i.stock < needs.qty
+    );
+END;
+
+CREATE TRIGGER trg_purchases_status_unapply_af AFTER UPDATE OF status ON Purchases
+WHEN NEW.status <> 'finished' AND OLD.status = 'finished' AND OLD.stock_applied = 1
+BEGIN
+    UPDATE Inputs
+       SET stock = stock - (
+               SELECT COALESCE(SUM(pi.quantity), 0)
+               FROM PurchaseItems pi
+               WHERE pi.purchase_id = NEW.id AND pi.input_id = Inputs.id
+           )
+     WHERE id IN (SELECT input_id FROM PurchaseItems WHERE purchase_id = NEW.id);
+
+    UPDATE Purchases SET stock_applied = 0 WHERE id = NEW.id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'PURCHASE_REOPENED', 'Purchases',
+            'purchase_id=' || NEW.id || ';status=' || NEW.status,
+            'DONE');
+END;
+
 CREATE TRIGGER trg_purchaseitems_stock BEFORE INSERT ON PurchaseItems
 BEGIN
     SELECT RAISE(ABORT, 'El insumo no existe o está inactivo')
     WHERE (SELECT COALESCE(active, 0) FROM Inputs WHERE id = NEW.input_id) = 0;
+
+    SELECT RAISE(ABORT, 'Reabra el pedido antes de modificar sus insumos')
+    WHERE (SELECT COALESCE(stock_applied, 0) FROM Purchases WHERE id = NEW.purchase_id) = 1;
+END;
+
+CREATE TRIGGER trg_purchaseitems_delete_bi BEFORE DELETE ON PurchaseItems
+WHEN (SELECT COALESCE(stock_applied, 0) FROM Purchases WHERE id = OLD.purchase_id) = 1
+BEGIN
+    SELECT RAISE(ABORT, 'Reabra el pedido antes de modificar sus insumos');
 END;
 
 CREATE TRIGGER trg_purchaseitems_ai AFTER INSERT ON PurchaseItems
 BEGIN
-    UPDATE Inputs
-       SET stock = stock + NEW.quantity,
-           cost = NEW.unit_cost
-     WHERE id = NEW.input_id;
     UPDATE Purchases
        SET total_amount = (
            SELECT COALESCE(SUM(quantity * unit_cost), 0)
@@ -723,14 +923,13 @@ BEGIN
      WHERE id = NEW.purchase_id;
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'PURCHASE_RECEIVED', 'PurchaseItems',
+            'PURCHASE_ITEM_ADDED', 'PurchaseItems',
             'purchase_id=' || NEW.purchase_id || ';input_id=' || NEW.input_id || ';qty=' || NEW.quantity || ';unit_cost=' || NEW.unit_cost,
             'DONE');
 END;
 
 CREATE TRIGGER trg_purchaseitems_ad AFTER DELETE ON PurchaseItems
 BEGIN
-    UPDATE Inputs SET stock = stock - OLD.quantity WHERE id = OLD.input_id;
     UPDATE Purchases
        SET total_amount = (
            SELECT COALESCE(SUM(quantity * unit_cost), 0)
@@ -832,18 +1031,20 @@ _schema_hash_password() {
 }
 
 db_seed_demo_data() {
-    local product_count admin_salt admin_hash cashier_hash
+    local product_count admin_salt admin_hash cashier_hash admin_pin_salt admin_pin_hash
     product_count=$(db_scalar "SELECT COUNT(*) FROM Products;" 2>/dev/null || printf '0')
     product_count="${product_count:-0}"
 
     admin_salt="e7c1a9f4b2d8"
     admin_hash=$(_schema_hash_password "${admin_salt}:admin123")
     cashier_hash=$(_schema_hash_password "b4f2c8d1a6e3:cajero123")
+    admin_pin_salt="c9d8e7f6a5b4"
+    admin_pin_hash=$(_schema_hash_password "${admin_pin_salt}:admin123")
 
     if (( product_count > 0 )); then
-        db_exec "INSERT OR IGNORE INTO Users (username, password_hash, salt, role)
-                 VALUES ('admin', $(db_quote "${admin_hash}"), $(db_quote "${admin_salt}"), 'admin'),
-                        ('cajero', $(db_quote "${cashier_hash}"), 'b4f2c8d1a6e3', 'vendedor');"
+        db_exec "INSERT OR IGNORE INTO Users (username, password_hash, salt, role, pin_hash, pin_salt, can_view_metrics, can_manage_stock)
+                 VALUES ('admin', $(db_quote "${admin_hash}"), $(db_quote "${admin_salt}"), 'admin', $(db_quote "${admin_pin_hash}"), $(db_quote "${admin_pin_salt}"), 1, 1),
+                        ('cajero', $(db_quote "${cashier_hash}"), 'b4f2c8d1a6e3', 'vendedor', NULL, NULL, 0, 0);"
         return 0
     fi
 
@@ -1063,16 +1264,18 @@ INSERT INTO ProductRecipe (product_id, input_id, quantity_per_unit) VALUES
     (10, 3, 0.040), (10, 8, 0.700), (10, 10, 0.020), (10, 5, 1), (10, 7, 1);
 
 INSERT INTO Purchases (id, timestamp, supplier_id, total_amount, notes, status, created_by) VALUES
-    (1, datetime('now', '-30 days'), 2, 0, 'Reposición de alcohol y agua mineral', 'Recibida', 'admin'),
-    (2, datetime('now', '-18 days'), 1, 0, 'Frutos rojos y botánicos de temporada', 'Recibida', 'admin'),
-    (3, datetime('now', '-9 days'), 4, 0, 'Envases y etiquetas para fin de mes', 'Recibida', 'cajero'),
-    (4, datetime('now', '-3 days'), 3, 0, 'Miel y levadura para hidromiel', 'Recibida', 'admin');
+    (1, datetime('now', '-30 days'), 2, 0, 'Reposición de alcohol y agua mineral', 'pending', 'admin'),
+    (2, datetime('now', '-18 days'), 1, 0, 'Frutos rojos y botánicos de temporada', 'pending', 'admin'),
+    (3, datetime('now', '-9 days'), 4, 0, 'Envases y etiquetas para fin de mes', 'pending', 'cajero'),
+    (4, datetime('now', '-3 days'), 3, 0, 'Miel y levadura para hidromiel', 'pending', 'admin');
 
 INSERT INTO PurchaseItems (purchase_id, input_id, quantity, unit_cost) VALUES
     (1, 1, 20, 9.50), (1, 8, 50, 0.15), (1, 10, 2, 3.60),
     (2, 2, 15, 4.20), (2, 4, 5, 11.50), (2, 8, 20, 0.15),
     (3, 5, 100, 1.20), (3, 6, 200, 0.25), (3, 7, 100, 0.35),
     (4, 3, 20, 6.80), (4, 9, 10, 2.40);
+
+UPDATE Purchases SET status = 'finished' WHERE id IN (1, 2, 3, 4);
 
 UPDATE Products SET stock = 28 WHERE id = 1;
 UPDATE Products SET stock = 42 WHERE id = 2;
@@ -1099,9 +1302,9 @@ SQL
 )
     db_exec "${seed_sql}" || return 1
 
-    db_exec "INSERT OR IGNORE INTO Users (username, password_hash, salt, role)
-             VALUES ('admin', $(db_quote "${admin_hash}"), $(db_quote "${admin_salt}"), 'admin'),
-                    ('cajero', $(db_quote "${cashier_hash}"), 'b4f2c8d1a6e3', 'vendedor');" || return 1
+    db_exec "INSERT OR IGNORE INTO Users (username, password_hash, salt, role, pin_hash, pin_salt, can_view_metrics, can_manage_stock)
+             VALUES ('admin', $(db_quote "${admin_hash}"), $(db_quote "${admin_salt}"), 'admin', $(db_quote "${admin_pin_hash}"), $(db_quote "${admin_pin_salt}"), 1, 1),
+                    ('cajero', $(db_quote "${cashier_hash}"), 'b4f2c8d1a6e3', 'vendedor', NULL, NULL, 0, 0);" || return 1
 
     return 0
 }

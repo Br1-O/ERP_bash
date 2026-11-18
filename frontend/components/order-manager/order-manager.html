@@ -2,47 +2,54 @@
     <div class="manager-toolbar card">
         <div class="manager-filters">
             <label class="search-field">
-                <span>Buscar pedido</span>
+                <span>Buscar venta o pedido</span>
                 <input type="search" data-order-search placeholder="Cliente, nota o número…">
             </label>
             <label class="field compact-field">
                 <span>Estado</span>
                 <select data-order-status-filter>
                     <option value="all">Todos</option>
+                    <option value="draft">Borradores</option>
                     <option value="pending">Pendientes</option>
-                    <option value="finished">Finalizados</option>
-                    <option value="cancel">Cancelados</option>
+                    <option value="preparing">En preparación</option>
+                    <option value="confirmed">Confirmados</option>
+                    <option value="paid">Pagados</option>
+                    <option value="delivered">Entregados</option>
+                    <option value="cancel">Anulados</option>
                 </select>
             </label>
         </div>
-        <button class="btn primary" type="button" data-create-order>+ Nuevo pedido</button>
+        <div class="inline-actions">
+            <button class="btn primary" type="button" data-create-sale>+ Nueva venta</button>
+            <button class="btn primary" type="button" data-create-order>+ Nuevo pedido</button>
+        </div>
     </div>
 
     <article class="card manager-card">
         <header class="card-header">
             <div>
-                <span class="eyebrow">Pedidos de clientes</span>
-                <h3>Seguimiento de ventas</h3>
+                <span class="eyebrow">Ventas y pedidos</span>
+                <h3>Todos los registros</h3>
             </div>
-            <span class="badge badge-soft" data-order-count>0 pedidos</span>
+            <span class="badge badge-soft" data-order-count>0 registros</span>
         </header>
         <div class="table-responsive">
             <table>
                 <thead>
-                    <tr><th>Pedido</th><th>Fecha</th><th>Cliente</th><th>Ítems</th><th>Unidades</th><th>Total</th><th>Estado</th></tr>
+                    <tr><th>Registro</th><th>Tipo</th><th>Fecha</th><th>Cliente</th><th>Ítems</th><th>Unidades</th><th>Total</th><th>Estado</th></tr>
                 </thead>
                 <tbody data-order-body></tbody>
             </table>
         </div>
         <div class="empty-state" data-order-empty hidden>
-            <strong>No hay pedidos para mostrar</strong>
+            <strong>No hay ventas ni pedidos para mostrar</strong>
             <span>Ajuste los filtros o cree un pedido nuevo.</span>
         </div>
         <erp-pagination data-order-pagination></erp-pagination>
     </article>
 </section>
 
-<erp-modal id="order-detail-modal" title="Detalle del pedido" size="wide"></erp-modal>
+<erp-modal id="order-detail-modal" title="Detalle del registro" size="wide"></erp-modal>
 
 <erp-modal id="order-form-modal" title="Pedido" size="wide">
     <form class="form-stack" data-order-form>
@@ -84,11 +91,7 @@
             </label>
             <label class="field">
                 <span>Estado</span>
-                <select data-order-state>
-                    <option value="pending">Pendiente</option>
-                    <option value="finished">Finalizado</option>
-                    <option value="cancel">Cancelado</option>
-                </select>
+                <select data-order-state></select>
             </label>
             <label class="field">
                 <span>Descuento</span>
@@ -124,6 +127,84 @@
         <div class="form-actions">
             <button class="btn ghost" type="button" data-order-cancel>Cancelar</button>
             <button class="btn primary" type="submit" data-order-submit>Guardar pedido</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="sale-form-modal" title="Nueva venta" size="wide">
+    <form class="form-stack" data-sale-form>
+        <div class="form-grid">
+            <label class="field">
+                <span>Cliente</span>
+                <select data-sale-customer></select>
+            </label>
+            <label class="field">
+                <span>Método de pago</span>
+                <select data-sale-payment>
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Transferencia">Transferencia</option>
+                    <option value="Tarjeta">Tarjeta</option>
+                </select>
+            </label>
+            <label class="field">
+                <span>Descuento</span>
+                <select data-sale-discount-type>
+                    <option value="none">Sin descuento</option>
+                    <option value="percent">Porcentaje</option>
+                    <option value="fixed">Monto fijo</option>
+                </select>
+            </label>
+            <label class="field" data-sale-discount-value-field hidden>
+                <span data-sale-discount-value-label>Valor del descuento</span>
+                <input type="number" min="0" step="0.01" value="0" data-sale-discount-value>
+            </label>
+        </div>
+
+        <div class="sale-items-head">
+            <span>Detalle de la venta</span>
+            <button class="btn ghost small" type="button" data-sale-add-item>+ Agregar ítem</button>
+        </div>
+        <div class="sale-items" data-sale-items></div>
+
+        <div class="sale-total">
+            <div class="sale-total-row">
+                <span>Subtotal</span>
+                <strong data-sale-subtotal>$0.00</strong>
+            </div>
+            <div class="sale-total-row" data-sale-discount-row hidden>
+                <span data-sale-discount-label>Descuento</span>
+                <strong data-sale-discount>-$0.00</strong>
+            </div>
+            <div class="sale-total-row sale-total-final">
+                <span>Total estimado</span>
+                <strong data-sale-total>$0.00</strong>
+            </div>
+        </div>
+        <p class="form-error" data-sale-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-sale-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-sale-submit>Registrar venta</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="cancel-order-modal" title="Anular registro">
+    <form class="form-stack" data-cancel-form>
+        <p class="form-note" data-cancel-summary></p>
+        <label class="field">
+            <span>Motivo de la anulación</span>
+            <textarea data-cancel-reason rows="3" minlength="3" maxlength="300" required placeholder="Indique por qué se anula esta operación…"></textarea>
+            <small class="muted">Entre 3 y 300 caracteres. Quedará registrado en auditoría.</small>
+        </label>
+        <label class="field">
+            <span>PIN de autorización</span>
+            <input type="password" data-cancel-pin minlength="4" maxlength="20" autocomplete="off" required>
+            <small class="muted">PIN de un administrador o supervisor activo.</small>
+        </label>
+        <p class="form-error" data-cancel-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-cancel-close>Volver</button>
+            <button class="btn primary" type="submit" data-cancel-submit>Anular registro</button>
         </div>
     </form>
 </erp-modal>

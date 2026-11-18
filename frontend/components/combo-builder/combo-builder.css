@@ -1,0 +1,58 @@
+.combo-builder-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-muted);
+}
+
+.combo-builder-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.combo-builder-header strong {
+    display: block;
+}
+
+.combo-builder-header p {
+    margin: 3px 0 0;
+    font-size: 0.73rem;
+}
+
+.combo-builder-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.combo-builder-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 105px auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.combo-builder-row select,
+.combo-builder-row input {
+    min-width: 0;
+}
+
+@media (max-width: 640px) {
+    .combo-builder-header {
+        flex-direction: column;
+    }
+
+    .combo-builder-row {
+        grid-template-columns: minmax(0, 1fr) 90px;
+    }
+
+    .combo-builder-row [data-combo-builder-remove] {
+        grid-column: 1 / -1;
+        justify-self: end;
+    }
+}

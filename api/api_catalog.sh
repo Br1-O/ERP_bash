@@ -10,8 +10,8 @@ api_list_products_json() {
     local where=""
     (( only_active == 1 )) && where="WHERE p.active = 1"
 
-    local rows row id name category stock physical_stock threshold cost price active seasonal is_combo item out=""
-    rows=$(db_query "SELECT p.id, p.name, c.name,
+    local rows row id name category_id category stock physical_stock threshold cost price active seasonal is_combo item out=""
+    rows=$(db_query "SELECT p.id, p.name, p.category_id, c.name,
                             CASE WHEN p.is_combo = 1 THEN COALESCE((
                                 SELECT MIN(CAST(cp.stock / ci.quantity AS INTEGER))
                                 FROM ComboItems ci
@@ -25,10 +25,10 @@ api_list_products_json() {
                      ${where}
                      ORDER BY p.name;")
 
-    while IFS='|' read -r id name category stock physical_stock threshold cost price active seasonal is_combo; do
+    while IFS='|' read -r id name category_id category stock physical_stock threshold cost price active seasonal is_combo; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%d,"name":%s,"category":%s,"stock":%s,"physical_stock":%s,"min_threshold":%s,"cost":%s,"price":%s,"active":%s,"seasonal":%s,"is_combo":%s}' \
-            "${id}" "$(json_quote "${name}")" "$(json_quote "${category}")" \
+        item=$(printf '{"id":%d,"name":%s,"category_id":%s,"category":%s,"stock":%s,"physical_stock":%s,"min_threshold":%s,"cost":%s,"price":%s,"active":%s,"seasonal":%s,"is_combo":%s}' \
+            "${id}" "$(json_quote "${name}")" "$(json_number "${category_id}")" "$(json_quote "${category}")" \
             "$(json_number "${stock}")" "$(json_number "${physical_stock}")" "$(json_number "${threshold}")" \
             "$(json_number "${cost}")" "$(json_number "${price}")" \
             "$(json_number "${active}")" "$(json_number "${seasonal}")" "$(json_number "${is_combo}")")
@@ -65,7 +65,8 @@ api_list_customers_json() {
     rows=$(db_query "SELECT c.id, c.name, c.type, COALESCE(c.phone, ''), COALESCE(c.email, ''),
                             COUNT(s.id), COALESCE(SUM(s.total_amount), 0)
                      FROM Customers c
-                     LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished'
+                     LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
+                     WHERE c.active = 1
                      GROUP BY c.id
                      ORDER BY c.name;")
 
@@ -81,13 +82,50 @@ api_list_customers_json() {
     printf '[%s]' "${out}"
 }
 
+api_customer_detail_json() {
+    local customer_id="${1:-0}"
+    [[ "${customer_id}" =~ ^[0-9]+$ ]] || return 1
+
+    local row id name type phone email purchases total
+    row=$(db_query "SELECT c.id, c.name, c.type, COALESCE(c.phone, ''), COALESCE(c.email, ''),
+                           COUNT(s.id), COALESCE(SUM(s.total_amount), 0)
+                    FROM Customers c
+                    LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
+                    WHERE c.id = ${customer_id}
+                    GROUP BY c.id;")
+    [[ -z "${row}" ]] && return 1
+    IFS='|' read -r id name type phone email purchases total <<< "${row}"
+
+    local sale_rows sale_out="" sale_id sale_date sale_total sale_status sale_type
+    sale_rows=$(db_query "SELECT id, datetime(timestamp), total_amount,
+                                  COALESCE(NULLIF(order_stage, ''), CASE WHEN status = 'cancel' THEN 'cancel' WHEN order_type = 'direct' THEN 'delivered' WHEN status = 'finished' THEN 'delivered' ELSE 'pending' END),
+                                  order_type
+                          FROM Sales
+                          WHERE customer_id = ${customer_id}
+                          ORDER BY id DESC
+                          LIMIT 5;")
+    while IFS='|' read -r sale_id sale_date sale_total sale_status sale_type; do
+        [[ -z "${sale_id}" ]] && continue
+        sale_out+="${sale_out:+,}$(printf '{"id":%s,"date":%s,"total":%s,"status":%s,"order_type":%s}' \
+            "$(json_number "${sale_id}")" "$(json_quote "${sale_date}")" \
+            "$(json_number "${sale_total}")" "$(json_quote "${sale_status}")" \
+            "$(json_quote "${sale_type}")")"
+    done <<< "${sale_rows}"
+
+    printf '{"id":%s,"name":%s,"type":%s,"phone":%s,"email":%s,"purchases":%s,"total":%s,"recent_sales":[%s]}' \
+        "$(json_number "${id}")" "$(json_quote "${name}")" "$(json_quote "${type}")" \
+        "$(json_quote "${phone}")" "$(json_quote "${email}")" \
+        "$(json_number "${purchases}")" "$(json_number "${total}")" "${sale_out}"
+}
+
 api_list_suppliers_json() {
     local rows row id name contact phone email address inputs supplies item out=""
     rows=$(db_query "SELECT s.id, s.name, COALESCE(s.contact_person, ''), COALESCE(s.phone, ''),
                             COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id),
                             COALESCE(GROUP_CONCAT(i.name, ', '), '')
                      FROM Suppliers s
-                     LEFT JOIN Inputs i ON i.supplier_id = s.id
+                     LEFT JOIN Inputs i ON i.supplier_id = s.id AND i.active = 1
+                     WHERE s.active = 1
                      GROUP BY s.id
                      ORDER BY s.name;")
 
@@ -120,14 +158,14 @@ api_contacts_json() {
                                 COALESCE(s.email, ''), COALESCE(s.address, ''), COUNT(i.id),
                                 COALESCE(GROUP_CONCAT(i.name, ', '), '')
                          FROM Suppliers s
-                         LEFT JOIN Inputs i ON i.supplier_id = s.id
-                         WHERE 1 = 1 ${extra_supplier}
+                         LEFT JOIN Inputs i ON i.supplier_id = s.id AND i.active = 1
+                         WHERE s.active = 1 ${extra_supplier}
                          GROUP BY s.id ORDER BY s.name;")
     customers=$(db_query "SELECT c.id, c.name, c.type, COALESCE(c.phone, ''), COALESCE(c.email, ''),
                                 COUNT(s.id), COALESCE(SUM(s.total_amount), 0)
                          FROM Customers c
-                         LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished'
-                         WHERE 1 = 1 ${extra_customer}
+                         LEFT JOIN Sales s ON s.customer_id = c.id AND s.status = 'finished' AND (s.order_type = 'direct' OR s.order_stage IN ('paid', 'delivered'))
+                         WHERE c.active = 1 ${extra_customer}
                          GROUP BY c.id ORDER BY c.name;")
 
     local out_sup="" out_cus="" item row
@@ -184,6 +222,90 @@ api_create_supplier() {
         AUTH_ERROR="${DB_LAST_ERROR:-No se pudo crear el proveedor.}"
         return 1
     fi
+}
+
+api_update_customer() {
+    local customer_id="${1:-0}" name="${2:-}" type="${3:-Minorista}" phone="${4:-}" email="${5:-}"
+
+    AUTH_ERROR=""
+    [[ "${customer_id}" =~ ^[0-9]+$ ]] && (( customer_id > 0 )) || { AUTH_ERROR="Cliente inválido."; return 1; }
+    [[ -z "${name}" || ${#name} -gt 80 ]] && { AUTH_ERROR="Nombre de cliente inválido."; return 1; }
+    [[ "${type}" != "Mayorista" && "${type}" != "Minorista" ]] && { AUTH_ERROR="Tipo de cliente inválido."; return 1; }
+    [[ -n "${email}" && ! "${email}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] && { AUTH_ERROR="Email inválido."; return 1; }
+
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El cliente no existe."; return 2; }
+
+    db_set_context_user "${AUTH_USER:-sistema}"
+    if ! db_exec "UPDATE Customers
+                  SET name = $(db_quote "${name}"), type = $(db_quote "${type}"),
+                      phone = $(db_quote "${phone}"), email = $(db_quote "${email}")
+                  WHERE id = ${customer_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo actualizar el cliente.}"
+        return 1
+    fi
+    return 0
+}
+
+api_delete_customer() {
+    local customer_id="${1:-0}"
+
+    AUTH_ERROR=""
+    [[ "${customer_id}" =~ ^[0-9]+$ ]] && (( customer_id > 0 )) || { AUTH_ERROR="Cliente inválido."; return 1; }
+
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El cliente no existe."; return 2; }
+
+    db_set_context_user "${AUTH_USER:-sistema}"
+    if ! db_exec "UPDATE Customers SET active = 0 WHERE id = ${customer_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo eliminar el cliente.}"
+        return 1
+    fi
+    return 0
+}
+
+api_update_supplier() {
+    local supplier_id="${1:-0}" name="${2:-}" contact="${3:-}" phone="${4:-}" email="${5:-}" address="${6:-}"
+
+    AUTH_ERROR=""
+    [[ "${supplier_id}" =~ ^[0-9]+$ ]] && (( supplier_id > 0 )) || { AUTH_ERROR="Proveedor inválido."; return 1; }
+    [[ -z "${name}" || ${#name} -gt 80 ]] && { AUTH_ERROR="Nombre de proveedor inválido."; return 1; }
+    [[ -n "${email}" && ! "${email}" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] && { AUTH_ERROR="Email inválido."; return 1; }
+
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Suppliers WHERE id = ${supplier_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El proveedor no existe."; return 2; }
+
+    db_set_context_user "${AUTH_USER:-sistema}"
+    if ! db_exec "UPDATE Suppliers
+                  SET name = $(db_quote "${name}"), contact_person = $(db_quote "${contact}"),
+                      phone = $(db_quote "${phone}"), email = $(db_quote "${email}"),
+                      address = $(db_quote "${address}")
+                  WHERE id = ${supplier_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo actualizar el proveedor.}"
+        return 1
+    fi
+    return 0
+}
+
+api_delete_supplier() {
+    local supplier_id="${1:-0}"
+
+    AUTH_ERROR=""
+    [[ "${supplier_id}" =~ ^[0-9]+$ ]] && (( supplier_id > 0 )) || { AUTH_ERROR="Proveedor inválido."; return 1; }
+
+    local exists
+    exists=$(db_scalar "SELECT COUNT(*) FROM Suppliers WHERE id = ${supplier_id} AND active = 1;" 2>/dev/null || printf '0')
+    (( ${exists:-0} > 0 )) || { AUTH_ERROR="El proveedor no existe."; return 2; }
+
+    db_set_context_user "${AUTH_USER:-sistema}"
+    if ! db_exec "UPDATE Suppliers SET active = 0 WHERE id = ${supplier_id};"; then
+        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo eliminar el proveedor.}"
+        return 1
+    fi
+    return 0
 }
 
 api_create_product() {

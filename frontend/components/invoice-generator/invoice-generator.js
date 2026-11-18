@@ -65,18 +65,27 @@
             this.querySelector('[data-invoice-print]').addEventListener('click', () => this._print());
         }
 
+        _typeLabel(type) {
+            if (type === 'purchase') return 'Compra';
+            if (type === 'sale') return 'Venta';
+            return 'Pedido';
+        }
+
         async open(type, id) {
             this._error.hidden = true;
             this._preview.innerHTML = '<div class="empty-state"><strong>Generando comprobante…</strong></div>';
             this._modal.setTitle('Comprobante');
             await this._modal.open();
-            const path = type === 'purchase'
-                ? `/api/invoices/purchases/${Number(id)}`
-                : `/api/invoices/orders/${Number(id)}`;
+            const paths = {
+                purchase: `/api/invoices/purchases/${Number(id)}`,
+                sale: `/api/invoices/sales/${Number(id)}`,
+                order: `/api/invoices/orders/${Number(id)}`
+            };
+            const path = paths[type] || paths.order;
             try {
                 this._invoice = await ErpUI.api(path);
                 this._renderPreview();
-                this._modal.setTitle(`${this._invoice.type === 'purchase' ? 'Compra' : 'Pedido'} ${this._invoice.number}`);
+                this._modal.setTitle(`${this._typeLabel(this._invoice.type)} ${this._invoice.number}`);
             } catch (error) {
                 this._invoice = null;
                 this._preview.innerHTML = '';
@@ -180,7 +189,7 @@
             this._addText(page, 50, 800, business.name || 'Negocio', 'F2', 16);
             this._addText(page, 50, 783, [business.instagram, business.facebook].filter(Boolean).join(' · '), 'F1', 8);
             this._addText(page, 50, 771, [business.phone, business.email, business.website].filter(Boolean).join(' · '), 'F1', 8);
-            this._addText(page, 390, 800, `${invoice.type === 'purchase' ? 'Compra' : 'Pedido'} ${invoice.number}`, 'F2', 11);
+            this._addText(page, 390, 800, `${this._typeLabel(invoice.type)} ${invoice.number}`, 'F2', 11);
             this._addText(page, 390, 785, `Fecha: ${ErpUI.formatDateTime(document.date)}`, 'F1', 8);
             this._addText(page, 390, 773, `Estado: ${document.status || '—'}`, 'F1', 8);
             if (continued) this._addText(page, 390, 761, 'Continuación de ítems', 'F1', 8);

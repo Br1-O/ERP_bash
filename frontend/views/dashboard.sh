@@ -14,7 +14,16 @@ view_dashboard_page() {
     local active_nav="dashboard"
     [[ "${active_tab}" == "agenda" ]] && active_nav="contacts"
 
-    view_layout_start "Dashboard" "${active_nav}" "${active_tab}" "${user}" "${role}" "${alerts_count}"
+    local extra_head
+    extra_head=$(cat <<'EOF'
+    <link rel="stylesheet" href="/components/erp-modal/erp-modal.css">
+    <link rel="stylesheet" href="/components/erp-pagination/erp-pagination.css">
+    <link rel="stylesheet" href="/components/combo-builder/combo-builder.css">
+    <link rel="stylesheet" href="/components/product-detail/product-detail.css">
+EOF
+)
+
+    view_layout_start "Dashboard" "${active_nav}" "${active_tab}" "${user}" "${role}" "${alerts_count}" "${extra_head}"
 
     cat <<'EOF'
                 <div class="dashboard-tabs" role="tablist" aria-label="Subsecciones del dashboard">
@@ -114,7 +123,7 @@ view_dashboard_page() {
                             <div class="table-responsive">
                                 <table>
                                     <thead>
-                                        <tr><th>Venta</th><th>Cliente</th><th>Pago</th><th>Unidades</th><th>Total</th></tr>
+                                        <tr><th>Venta</th><th>Cliente</th><th>Pago</th><th>Unidades</th><th>Total</th><th>Acciones</th></tr>
                                     </thead>
                                     <tbody id="recent-sales-body"></tbody>
                                 </table>
@@ -274,6 +283,28 @@ view_dashboard_page() {
                             <div><span class="eyebrow">Catálogo</span><h3>Productos y disponibilidad</h3></div>
                             <span class="badge badge-soft" id="catalog-count">0 productos</span>
                         </header>
+                        <div class="manager-filters catalog-filters">
+                            <label class="search-field">
+                                <span>Buscar</span>
+                                <input type="search" id="catalog-search" placeholder="Nombre o categoría…">
+                            </label>
+                            <label class="field compact-field">
+                                <span>Categoría</span>
+                                <select id="catalog-category">
+                                    <option value="">Todas</option>
+                                </select>
+                            </label>
+                            <label class="field compact-field">
+                                <span>Estado</span>
+                                <select id="catalog-state">
+                                    <option value="active" selected>Activos</option>
+                                    <option value="all">Todos</option>
+                                    <option value="inactive">Inactivos</option>
+                                    <option value="low">Stock bajo</option>
+                                    <option value="combos">Combos</option>
+                                </select>
+                            </label>
+                        </div>
                         <div class="table-responsive">
                             <table>
                                 <thead>
@@ -282,6 +313,11 @@ view_dashboard_page() {
                                 <tbody id="products-table-body"></tbody>
                             </table>
                         </div>
+                        <div class="empty-state" id="catalog-empty" hidden>
+                            <strong>Sin productos</strong>
+                            <span>No hay productos que coincidan con los filtros.</span>
+                        </div>
+                        <erp-pagination id="catalog-pagination"></erp-pagination>
                     </article>
                 </section>
 
@@ -315,6 +351,36 @@ view_dashboard_page() {
                         </article>
                     </div>
                 </section>
+
+                <div class="modal-backdrop" id="void-sale-modal" hidden>
+                    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="void-sale-modal-title">
+                        <header class="modal-header">
+                            <div>
+                                <span class="eyebrow">Auditoría</span>
+                                <h2 id="void-sale-modal-title">Anular venta</h2>
+                            </div>
+                            <button class="icon-button" id="close-void-sale-modal" aria-label="Cerrar">×</button>
+                        </header>
+                        <div class="modal-body">
+                            <p class="form-note" id="void-sale-summary"></p>
+                            <label class="field">
+                                <span>Motivo de la anulación</span>
+                                <textarea id="void-sale-reason" rows="3" minlength="3" maxlength="300" placeholder="Indique por qué se anula esta operación…"></textarea>
+                                <small class="muted">Entre 3 y 300 caracteres. Quedará registrado en auditoría.</small>
+                            </label>
+                            <label class="field">
+                                <span>PIN de autorización</span>
+                                <input type="password" id="void-sale-pin" minlength="4" maxlength="20" autocomplete="off">
+                                <small class="muted">PIN de un administrador o supervisor activo.</small>
+                            </label>
+                            <p class="form-error" id="void-sale-error" hidden></p>
+                        </div>
+                        <footer class="modal-footer">
+                            <button class="btn ghost" id="cancel-void-sale" type="button">Volver</button>
+                            <button class="btn primary" id="submit-void-sale" type="button">Anular venta</button>
+                        </footer>
+                    </div>
+                </div>
 
                 <div class="modal-backdrop" id="sale-modal" hidden>
                     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="sale-modal-title">
@@ -381,6 +447,15 @@ view_dashboard_page() {
                         </footer>
                     </div>
                 </div>
+
+                <erp-combo-builder></erp-combo-builder>
+                <erp-product-detail></erp-product-detail>
+
+                <script src="/assets/components.js"></script>
+                <script src="/components/erp-modal/erp-modal.js"></script>
+                <script src="/components/erp-pagination/erp-pagination.js"></script>
+                <script src="/components/combo-builder/combo-builder.js"></script>
+                <script src="/components/product-detail/product-detail.js"></script>
 EOF
 
     view_layout_end "${data_json}"

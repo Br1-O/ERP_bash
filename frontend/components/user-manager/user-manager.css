@@ -1,0 +1,39 @@
+.user-permission {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.user-permission.on {
+    color: #4cc9a2;
+    background: rgba(76, 201, 162, 0.12);
+    border-color: rgba(76, 201, 162, 0.35);
+}
+
+.user-permission.off {
+    color: var(--text-dim);
+    background: var(--surface-muted);
+}
+
+.user-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.user-form-note {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+}
+
+@media (max-width: 720px) {
+    .user-actions {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

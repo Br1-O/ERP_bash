@@ -95,6 +95,63 @@
     border-color: rgba(230, 107, 107, 0.35);
 }
 
+.order-status-pill.draft {
+    color: var(--text-dim);
+    background: var(--surface-muted);
+}
+
+.order-status-pill.preparing {
+    color: #6ba7e6;
+    background: rgba(107, 167, 230, 0.12);
+    border-color: rgba(107, 167, 230, 0.35);
+}
+
+.order-status-pill.confirmed {
+    color: #9a8cf0;
+    background: rgba(154, 140, 240, 0.12);
+    border-color: rgba(154, 140, 240, 0.35);
+}
+
+.order-status-pill.paid {
+    color: #4cc9a2;
+    background: rgba(76, 201, 162, 0.12);
+    border-color: rgba(76, 201, 162, 0.35);
+}
+
+.order-status-pill.delivered {
+    color: #4cc9a2;
+    background: rgba(76, 201, 162, 0.12);
+    border-color: rgba(76, 201, 162, 0.35);
+}
+
+.order-stock-note {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-dim);
+    font-size: 0.66rem;
+    white-space: nowrap;
+}
+
+.cancel-detail {
+    margin: 10px 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(230, 107, 107, 0.35);
+    border-radius: 10px;
+    background: rgba(230, 107, 107, 0.08);
+}
+
+.cancel-detail strong {
+    color: #e66b6b;
+}
+
+.cancel-detail p {
+    margin: 4px 0;
+}
+
+.cancel-detail small {
+    color: var(--text-dim);
+}
+
 .order-detail-actions {
     display: flex;
     flex-wrap: wrap;

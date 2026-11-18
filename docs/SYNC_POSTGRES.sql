@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS erp.suppliers (
     contact_person text,
     phone text,
     email text,
-    address text
+    address text,
+    active smallint NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS erp.customers (
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS erp.customers (
     name text NOT NULL,
     type text NOT NULL DEFAULT 'Minorista',
     phone text,
-    email text
+    email text,
+    active smallint NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS erp.inputs (
@@ -107,7 +109,12 @@ CREATE TABLE IF NOT EXISTS erp.sales (
     notes text,
     created_by text NOT NULL DEFAULT 'sistema',
     stock_applied smallint NOT NULL DEFAULT 0,
-    order_type text NOT NULL DEFAULT 'direct'
+    order_type text NOT NULL DEFAULT 'direct',
+    order_stage text NOT NULL DEFAULT 'delivered',
+    cancel_reason text,
+    cancelled_by text,
+    cancel_authorized_by text,
+    cancelled_at timestamp
 );
 
 CREATE TABLE IF NOT EXISTS erp.sale_items (
@@ -140,8 +147,9 @@ CREATE TABLE IF NOT EXISTS erp.purchases (
     supplier_id integer REFERENCES erp.suppliers(id),
     total_amount numeric(14,2) NOT NULL DEFAULT 0,
     notes text,
-    status text NOT NULL DEFAULT 'PENDIENTE',
-    created_by text
+    status text NOT NULL DEFAULT 'pending',
+    created_by text,
+    stock_applied smallint NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS erp.purchase_items (
@@ -176,6 +184,34 @@ ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS notes text;
 ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS created_by text NOT NULL DEFAULT 'sistema';
 ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS stock_applied smallint NOT NULL DEFAULT 0;
 ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS order_type text NOT NULL DEFAULT 'direct';
+ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS order_stage text NOT NULL DEFAULT 'delivered';
+ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS cancel_reason text;
+ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS cancelled_by text;
+ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS cancel_authorized_by text;
+ALTER TABLE erp.sales ADD COLUMN IF NOT EXISTS cancelled_at timestamp;
+UPDATE erp.sales SET order_stage = CASE
+    WHEN status = 'cancel' THEN 'cancel'
+    WHEN order_type = 'direct' THEN 'delivered'
+    WHEN status = 'finished' THEN 'delivered'
+    ELSE 'pending'
+END
+WHERE status = 'cancel' AND order_stage <> 'cancel';
+ALTER TABLE erp.suppliers ADD COLUMN IF NOT EXISTS active smallint NOT NULL DEFAULT 1;
+ALTER TABLE erp.customers ADD COLUMN IF NOT EXISTS active smallint NOT NULL DEFAULT 1;
+ALTER TABLE erp.purchases ADD COLUMN IF NOT EXISTS stock_applied smallint NOT NULL DEFAULT 0;
+ALTER TABLE erp.purchases ALTER COLUMN status SET DEFAULT 'pending';
+UPDATE erp.purchases
+   SET status = CASE
+       WHEN status IN ('Recibida', 'recibida', 'received', 'Finalizada', 'finalizada', 'finished') THEN 'finished'
+       WHEN status IN ('En proceso', 'en proceso', 'processing') THEN 'processing'
+       WHEN status IN ('Pendiente', 'pendiente', 'pending') THEN 'pending'
+       ELSE status
+   END
+ WHERE status IN ('Recibida', 'recibida', 'received', 'Finalizada', 'finalizada', 'finished',
+                  'En proceso', 'en proceso', 'processing',
+                  'Pendiente', 'pendiente', 'pending');
+UPDATE erp.purchases SET stock_applied = 1 WHERE status = 'finished';
+UPDATE erp.sales SET stock_applied = 1 WHERE status = 'finished';
 
 CREATE OR REPLACE FUNCTION erp.sync_snapshot(payload jsonb)
 RETURNS jsonb
@@ -189,7 +225,7 @@ BEGIN
     END IF;
 
     remote_schema := COALESCE((payload->>'schema_version')::integer, 0);
-    IF remote_schema <> 5 THEN
+    IF remote_schema <> 7 THEN
         RAISE EXCEPTION 'Versión de esquema no soportada: %', remote_schema;
     END IF;
 
@@ -199,21 +235,25 @@ BEGIN
          AS x(id integer, name text)
     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
 
-    INSERT INTO erp.suppliers (id, name, contact_person, phone, email, address)
-    SELECT x.id, x.name, x.contact_person, x.phone, x.email, x.address
+    INSERT INTO erp.suppliers (id, name, contact_person, phone, email, address, active)
+    SELECT x.id, x.name, x.contact_person, x.phone, x.email, x.address,
+           COALESCE(x.active, 1)
     FROM jsonb_to_recordset(COALESCE(payload->'tables'->'suppliers', '[]'::jsonb))
-         AS x(id integer, name text, contact_person text, phone text, email text, address text)
+         AS x(id integer, name text, contact_person text, phone text, email text,
+              address text, active smallint)
     ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name, contact_person = EXCLUDED.contact_person,
-        phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address;
+        phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address,
+        active = EXCLUDED.active;
 
-    INSERT INTO erp.customers (id, name, type, phone, email)
-    SELECT x.id, x.name, COALESCE(x.type, 'Minorista'), x.phone, x.email
+    INSERT INTO erp.customers (id, name, type, phone, email, active)
+    SELECT x.id, x.name, COALESCE(x.type, 'Minorista'), x.phone, x.email,
+           COALESCE(x.active, 1)
     FROM jsonb_to_recordset(COALESCE(payload->'tables'->'customers', '[]'::jsonb))
-         AS x(id integer, name text, type text, phone text, email text)
+         AS x(id integer, name text, type text, phone text, email text, active smallint)
     ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name, type = EXCLUDED.type,
-        phone = EXCLUDED.phone, email = EXCLUDED.email;
+        phone = EXCLUDED.phone, email = EXCLUDED.email, active = EXCLUDED.active;
 
     INSERT INTO erp.inputs (id, name, category_id, stock, unit, cost, supplier_id,
                             min_stock_threshold, active)
@@ -287,18 +327,29 @@ BEGIN
 
     INSERT INTO erp.sales (id, timestamp, customer_id, subtotal_amount, discount_type,
                            discount_value, discount_amount, total_amount, payment_method,
-                           status, notes, created_by, stock_applied, order_type)
+                           status, notes, created_by, stock_applied, order_type,
+                           order_stage, cancel_reason, cancelled_by,
+                           cancel_authorized_by, cancelled_at)
     SELECT x.id, x.timestamp, x.customer_id, x.subtotal_amount,
            COALESCE(x.discount_type, 'none'), COALESCE(x.discount_value, 0),
            COALESCE(x.discount_amount, 0), x.total_amount,
            COALESCE(x.payment_method, 'Efectivo'), COALESCE(x.status, 'finished'),
            x.notes, COALESCE(x.created_by, 'sistema'), COALESCE(x.stock_applied, 0),
-           COALESCE(x.order_type, 'direct')
+           COALESCE(x.order_type, 'direct'),
+           CASE
+               WHEN COALESCE(x.status, 'finished') = 'cancel' THEN 'cancel'
+               WHEN COALESCE(x.order_type, 'direct') = 'direct' THEN 'delivered'
+               WHEN COALESCE(x.status, 'finished') = 'finished' THEN 'delivered'
+               ELSE COALESCE(x.order_stage, 'pending')
+           END,
+           x.cancel_reason, x.cancelled_by, x.cancel_authorized_by, x.cancelled_at
     FROM jsonb_to_recordset(COALESCE(payload->'tables'->'sales', '[]'::jsonb))
          AS x(id integer, timestamp timestamp, customer_id integer, subtotal_amount numeric,
               discount_type text, discount_value numeric, discount_amount numeric,
               total_amount numeric, payment_method text, status text, notes text,
-              created_by text, stock_applied smallint, order_type text)
+              created_by text, stock_applied smallint, order_type text,
+              order_stage text, cancel_reason text, cancelled_by text,
+              cancel_authorized_by text, cancelled_at timestamp)
     ON CONFLICT (id) DO UPDATE SET
         timestamp = EXCLUDED.timestamp, customer_id = EXCLUDED.customer_id,
         subtotal_amount = EXCLUDED.subtotal_amount,
@@ -309,7 +360,11 @@ BEGIN
         payment_method = EXCLUDED.payment_method,
         status = EXCLUDED.status, notes = EXCLUDED.notes,
         created_by = EXCLUDED.created_by, stock_applied = EXCLUDED.stock_applied,
-        order_type = EXCLUDED.order_type;
+        order_type = EXCLUDED.order_type, order_stage = EXCLUDED.order_stage,
+        cancel_reason = EXCLUDED.cancel_reason,
+        cancelled_by = EXCLUDED.cancelled_by,
+        cancel_authorized_by = EXCLUDED.cancel_authorized_by,
+        cancelled_at = EXCLUDED.cancelled_at;
 
     INSERT INTO erp.sale_items (id, sale_id, product_id, quantity, unit_price)
     SELECT x.id, x.sale_id, x.product_id, x.quantity, x.unit_price
@@ -336,16 +391,18 @@ BEGIN
         batch_id = EXCLUDED.batch_id, input_id = EXCLUDED.input_id,
         quantity = EXCLUDED.quantity;
 
-    INSERT INTO erp.purchases (id, timestamp, supplier_id, total_amount, notes, status, created_by)
+    INSERT INTO erp.purchases (id, timestamp, supplier_id, total_amount, notes,
+                               status, created_by, stock_applied)
     SELECT x.id, x.timestamp, x.supplier_id, x.total_amount, x.notes,
-           COALESCE(x.status, 'PENDIENTE'), x.created_by
+           COALESCE(x.status, 'pending'), x.created_by, COALESCE(x.stock_applied, 0)
     FROM jsonb_to_recordset(COALESCE(payload->'tables'->'purchases', '[]'::jsonb))
          AS x(id integer, timestamp timestamp, supplier_id integer, total_amount numeric,
-              notes text, status text, created_by text)
+              notes text, status text, created_by text, stock_applied smallint)
     ON CONFLICT (id) DO UPDATE SET
         timestamp = EXCLUDED.timestamp, supplier_id = EXCLUDED.supplier_id,
         total_amount = EXCLUDED.total_amount, notes = EXCLUDED.notes,
-        status = EXCLUDED.status, created_by = EXCLUDED.created_by;
+        status = EXCLUDED.status, created_by = EXCLUDED.created_by,
+        stock_applied = EXCLUDED.stock_applied;
 
     INSERT INTO erp.purchase_items (id, purchase_id, input_id, quantity, unit_cost)
     SELECT x.id, x.purchase_id, x.input_id, x.quantity, x.unit_cost

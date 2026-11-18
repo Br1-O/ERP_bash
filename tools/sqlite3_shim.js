@@ -14,6 +14,8 @@ const readline = require('node:readline');
 function parseArgs(argv) {
     let database = ':memory:';
     let separator = '|';
+    let hasDatabase = false;
+    const queries = [];
     for (let i = 0; i < argv.length; i += 1) {
         const arg = argv[i];
         if (arg === '-separator' && i + 1 < argv.length) {
@@ -31,9 +33,14 @@ function parseArgs(argv) {
             continue;
         }
         if (arg.startsWith('-')) continue;
-        database = arg;
+        if (!hasDatabase) {
+            database = arg;
+            hasDatabase = true;
+        } else {
+            queries.push(arg);
+        }
     }
-    return { database, separator };
+    return { database, separator, queries };
 }
 
 function formatValue(value) {
@@ -117,8 +124,20 @@ function execute(db, sql, separator) {
 }
 
 function main() {
-    const { database, separator } = parseArgs(process.argv.slice(2));
+    const { database, separator, queries } = parseArgs(process.argv.slice(2));
     const db = new DatabaseSync(database);
+    if (queries.length) {
+        try {
+            const output = execute(db, queries.join(' '), separator);
+            if (output) process.stdout.write(`${output}\n`);
+        } catch (error) {
+            process.stderr.write(`Error: ${error.message}\n`);
+            process.exitCode = 1;
+        } finally {
+            db.close();
+        }
+        return;
+    }
     let buffer = '';
     let separatorValue = separator;
 

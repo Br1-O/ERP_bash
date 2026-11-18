@@ -52,7 +52,9 @@ api_inv_products_json() {
     local page per_page
     page=$(api_inv_int "${4:-1}" 1 1 100000)
     per_page=$(api_inv_int "${5:-8}" 8 1 50)
-    [[ "${category}" =~ ^[0-9]+$ ]] || category=0
+    if [[ "${category}" != "combos" ]]; then
+        [[ "${category}" =~ ^[0-9]+$ ]] || category=0
+    fi
 
     local -a where=("1 = 1")
     case "${state}" in
@@ -66,7 +68,9 @@ api_inv_products_json() {
                       ), 0) ELSE p.stock END <= p.min_production_threshold") ;;
         *) where+=("p.active = 1") ;;
     esac
-    if (( category > 0 )); then
+    if [[ "${category}" == "combos" ]]; then
+        where+=("p.is_combo = 1")
+    elif (( category > 0 )); then
         where+=("p.category_id = ${category}")
     fi
     if [[ -n "${search}" ]]; then
@@ -330,7 +334,7 @@ api_inv_input_detail_json() {
 
 api_inv_meta_json() {
     local cat_rows sup_rows input_rows cat_out="" sup_out="" input_out=""
-    local id name contact phone unit stock supplier_id supplier_name
+    local id name contact phone unit stock cost supplier_id supplier_name
     cat_rows=$(db_query "SELECT id, name FROM Categories ORDER BY name;")
     while IFS='|' read -r id name; do
         [[ -z "${id}" ]] && continue
@@ -338,24 +342,25 @@ api_inv_meta_json() {
     done <<< "${cat_rows}"
 
     sup_rows=$(db_query "SELECT id, name, COALESCE(contact_person, ''), COALESCE(phone, '')
-                         FROM Suppliers ORDER BY name;")
+                         FROM Suppliers WHERE active = 1 ORDER BY name;")
     while IFS='|' read -r id name contact phone; do
         [[ -z "${id}" ]] && continue
         sup_out+="${sup_out:+,}$(printf '{"id":%s,"name":%s,"contact":%s,"phone":%s}' \
             "$(json_number "${id}")" "$(json_quote "${name}")" "$(json_quote "${contact}")" "$(json_quote "${phone}")")"
     done <<< "${sup_rows}"
 
-    input_rows=$(db_query "SELECT i.id, i.name, i.unit, i.stock, COALESCE(i.supplier_id, 0),
+    input_rows=$(db_query "SELECT i.id, i.name, i.unit, i.stock, i.cost, COALESCE(s.id, 0),
                                   COALESCE(s.name, 'Sin proveedor')
                            FROM Inputs i
-                           LEFT JOIN Suppliers s ON s.id = i.supplier_id
+                           LEFT JOIN Suppliers s ON s.id = i.supplier_id AND s.active = 1
                            WHERE i.active = 1
                            ORDER BY i.name;")
-    while IFS='|' read -r id name unit stock supplier_id supplier_name; do
+    while IFS='|' read -r id name unit stock cost supplier_id supplier_name; do
         [[ -z "${id}" ]] && continue
-        input_out+="${input_out:+,}$(printf '{"id":%s,"name":%s,"unit":%s,"stock":%s,"supplier_id":%s,"supplier":%s}' \
+        input_out+="${input_out:+,}$(printf '{"id":%s,"name":%s,"unit":%s,"stock":%s,"cost":%s,"supplier_id":%s,"supplier":%s}' \
             "$(json_number "${id}")" "$(json_quote "${name}")" "$(json_quote "${unit}")" \
-            "$(json_number "${stock}")" "$(json_number "${supplier_id}")" "$(json_quote "${supplier_name}")")"
+            "$(json_number "${stock}")" "$(json_number "${cost}")" \
+            "$(json_number "${supplier_id}")" "$(json_quote "${supplier_name}")")"
     done <<< "${input_rows}"
 
     printf '{"categories":[%s],"suppliers":[%s],"inputs":[%s]}' "${cat_out}" "${sup_out}" "${input_out}"

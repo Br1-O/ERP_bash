@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Pedidos de clientes: estados, edición de líneas y control de stock.
+# Ventas y pedidos: listado unificado, estados, edición de líneas y stock.
 
 [[ -n "${_ERP_API_ORDERS_LOADED:-}" ]] && return 0
 declare -g _ERP_API_ORDERS_LOADED=1
@@ -8,6 +8,47 @@ declare -g _ERP_API_ORDERS_LOADED=1
 declare -g ORDER_ID=""
 declare -g ORDER_CUSTOMER_ID=""
 declare -g ORDER_TOTAL=""
+
+_api_orders_stage_expr() {
+    local alias="${1:-s}"
+    printf "COALESCE(NULLIF(%s.order_stage, ''), CASE WHEN %s.status = 'cancel' THEN 'cancel' WHEN %s.order_type = 'direct' THEN 'delivered' WHEN %s.status = 'finished' THEN 'delivered' ELSE 'pending' END)" "${alias}" "${alias}" "${alias}" "${alias}"
+}
+
+api_orders_stage_is_early() {
+    case "${1:-}" in
+        draft|pending|preparing) return 0 ;;
+    esac
+    return 1
+}
+
+api_orders_stage_is_final() {
+    case "${1:-}" in
+        confirmed|paid|delivered) return 0 ;;
+    esac
+    return 1
+}
+
+api_orders_stage_status() {
+    case "${1:-}" in
+        draft|pending|preparing) printf 'pending' ;;
+        confirmed|paid|delivered) printf 'finished' ;;
+        cancel) printf 'cancel' ;;
+        *) return 1 ;;
+    esac
+}
+
+api_orders_can_transition() {
+    local from="${1:-}" to="${2:-}"
+    [[ "${from}" == "${to}" ]] && return 0
+    case "${from}" in
+        draft) [[ "${to}" == "pending" || "${to}" == "preparing" || "${to}" == "confirmed" ]] ;;
+        pending) [[ "${to}" == "preparing" || "${to}" == "confirmed" ]] ;;
+        preparing) [[ "${to}" == "confirmed" ]] ;;
+        confirmed) [[ "${to}" == "paid" || "${to}" == "delivered" ]] ;;
+        paid) [[ "${to}" == "delivered" ]] ;;
+        *) return 1 ;;
+    esac
+}
 
 api_orders_int() {
     local value="${1:-}" default="${2:-1}" min="${3:-1}" max="${4:-100}"
@@ -24,9 +65,13 @@ api_orders_json() {
     page=$(api_orders_int "${3:-1}" 1 1 100000)
     per_page=$(api_orders_int "${4:-8}" 8 1 50)
 
-    local -a where=("s.order_type = 'order'")
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
+
+    local -a where=("1 = 1")
     case "${status}" in
-        pending|finished|cancel) where+=("s.status = '${status}'") ;;
+        draft|pending|preparing|confirmed|paid|delivered|cancel) where+=("${stage_expr} = '${status}'") ;;
+        finished) where+=("s.status = 'finished'") ;;
     esac
     if [[ -n "${search}" ]]; then
         local like
@@ -46,16 +91,23 @@ api_orders_json() {
                        WHERE ${where_sql};" 2>/dev/null || printf '0')
     [[ "${total}" =~ ^[0-9]+$ ]] || total=0
     pages=$(( (total + per_page - 1) / per_page ))
-    (( page > pages && pages > 0 )) && page="${pages}"
+    if (( pages == 0 )); then
+        page=1
+    elif (( page > pages )); then
+        page="${pages}"
+    fi
     offset=$(( (page - 1) * per_page ))
 
-    local rows row id date customer_id customer_name total_amount subtotal discount status_value
-    local payment notes created_by items units stock_applied item out=""
+    local rows row id date customer_id customer_name total_amount subtotal discount stage_value
+    local payment notes created_by items units stock_applied order_type_value stock_status
+    local cancel_reason cancelled_by cancel_authorized_by cancelled_at item out=""
     rows=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(s.customer_id, 0),
                             COALESCE(c.name, 'Consumidor final'), s.total_amount, s.subtotal_amount,
-                            s.discount_amount, s.status, s.payment_method, COALESCE(s.notes, ''),
+                            s.discount_amount, ${stage_expr}, s.payment_method, COALESCE(s.notes, ''),
                             s.created_by, COUNT(si.id), COALESCE(SUM(si.quantity), 0),
-                            s.stock_applied
+                            s.stock_applied, s.order_type, s.status,
+                            COALESCE(s.cancel_reason, ''), COALESCE(s.cancelled_by, ''),
+                            COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), '')
                      FROM Sales s
                      LEFT JOIN Customers c ON c.id = s.customer_id
                      LEFT JOIN SaleItems si ON si.sale_id = s.id
@@ -64,15 +116,18 @@ api_orders_json() {
                      ORDER BY s.timestamp DESC, s.id DESC
                      LIMIT ${per_page} OFFSET ${offset};")
 
-    while IFS='|' read -r id date customer_id customer_name total_amount subtotal discount status_value payment notes created_by items units stock_applied; do
+    while IFS='|' read -r id date customer_id customer_name total_amount subtotal discount stage_value payment notes created_by items units stock_applied order_type_value stock_status cancel_reason cancelled_by cancel_authorized_by cancelled_at; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"total":%s,"subtotal":%s,"discount":%s,"status":%s,"payment_method":%s,"notes":%s,"created_by":%s,"items":%s,"units":%s,"stock_applied":%s}' \
+        item=$(printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"total":%s,"subtotal":%s,"discount":%s,"status":%s,"stock_status":%s,"payment_method":%s,"notes":%s,"created_by":%s,"items":%s,"units":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s}' \
             "$(json_number "${id}")" "$(json_quote "${date}")" "$(json_number "${customer_id}")" \
             "$(json_quote "${customer_name}")" "$(json_number "${total_amount}")" \
             "$(json_number "${subtotal}")" "$(json_number "${discount}")" \
-            "$(json_quote "${status_value}")" "$(json_quote "${payment}")" \
-            "$(json_quote "${notes}")" "$(json_quote "${created_by}")" \
-            "$(json_number "${items}")" "$(json_number "${units}")" "$(json_number "${stock_applied}")")
+            "$(json_quote "${stage_value}")" "$(json_quote "${stock_status}")" \
+            "$(json_quote "${payment}")" "$(json_quote "${notes}")" "$(json_quote "${created_by}")" \
+            "$(json_number "${items}")" "$(json_number "${units}")" "$(json_number "${stock_applied}")" \
+            "$(json_quote "${order_type_value}")" "$(json_quote "${cancel_reason}")" \
+            "$(json_quote "${cancelled_by}")" "$(json_quote "${cancel_authorized_by}")" \
+            "$(json_quote "${cancelled_at}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
 
@@ -84,22 +139,29 @@ api_order_detail_json() {
     local order_id="${1:-0}"
     [[ "${order_id}" =~ ^[0-9]+$ ]] || return 1
 
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
+
     local row id date customer_id customer_name customer_type customer_phone customer_email
-    local subtotal discount_type discount_value discount_total total payment notes status
-    local created_by stock_applied
+    local subtotal discount_type discount_value discount_total total payment notes stage_value
+    local created_by stock_applied order_type_value stock_status cancel_reason cancelled_by
+    local cancel_authorized_by cancelled_at
     row=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(s.customer_id, 0),
                            COALESCE(c.name, 'Consumidor final'), COALESCE(c.type, ''),
                            COALESCE(c.phone, ''), COALESCE(c.email, ''),
                            s.subtotal_amount, s.discount_type, s.discount_value, s.discount_amount,
-                           s.total_amount, s.payment_method, COALESCE(s.notes, ''), s.status,
-                           s.created_by, s.stock_applied
+                           s.total_amount, s.payment_method, COALESCE(s.notes, ''), ${stage_expr},
+                           s.created_by, s.stock_applied, s.order_type, s.status,
+                           COALESCE(s.cancel_reason, ''), COALESCE(s.cancelled_by, ''),
+                           COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), '')
                     FROM Sales s
                     LEFT JOIN Customers c ON c.id = s.customer_id
-                    WHERE s.id = ${order_id} AND s.order_type = 'order';")
+                    WHERE s.id = ${order_id};")
     [[ -z "${row}" ]] && return 1
     IFS='|' read -r id date customer_id customer_name customer_type customer_phone customer_email \
-        subtotal discount_type discount_value discount_total total payment notes status \
-        created_by stock_applied <<< "${row}"
+        subtotal discount_type discount_value discount_total total payment notes stage_value \
+        created_by stock_applied order_type_value stock_status cancel_reason cancelled_by \
+        cancel_authorized_by cancelled_at <<< "${row}"
 
     local item_rows item_out="" iid product_id product_name is_combo quantity unit_price item_total
     item_rows=$(db_query "SELECT si.id, si.product_id, p.name, p.is_combo, si.quantity,
@@ -116,15 +178,18 @@ api_order_detail_json() {
             "$(json_number "${unit_price}")" "$(json_number "${item_total}")")"
     done <<< "${item_rows}"
 
-    printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"customer_type":%s,"customer_phone":%s,"customer_email":%s,"subtotal":%s,"discount_type":%s,"discount_value":%s,"discount":%s,"total":%s,"payment_method":%s,"notes":%s,"status":%s,"created_by":%s,"stock_applied":%s,"items":[%s]}' \
+    printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"customer_type":%s,"customer_phone":%s,"customer_email":%s,"subtotal":%s,"discount_type":%s,"discount_value":%s,"discount":%s,"total":%s,"payment_method":%s,"notes":%s,"status":%s,"stock_status":%s,"created_by":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s,"items":[%s]}' \
         "$(json_number "${id}")" "$(json_quote "${date}")" "$(json_number "${customer_id}")" \
         "$(json_quote "${customer_name}")" "$(json_quote "${customer_type}")" \
         "$(json_quote "${customer_phone}")" "$(json_quote "${customer_email}")" \
         "$(json_number "${subtotal}")" "$(json_quote "${discount_type}")" \
         "$(json_number "${discount_value}")" "$(json_number "${discount_total}")" \
         "$(json_number "${total}")" "$(json_quote "${payment}")" "$(json_quote "${notes}")" \
-        "$(json_quote "${status}")" "$(json_quote "${created_by}")" \
-        "$(json_number "${stock_applied}")" "${item_out}"
+        "$(json_quote "${stage_value}")" "$(json_quote "${stock_status}")" \
+        "$(json_quote "${created_by}")" "$(json_number "${stock_applied}")" \
+        "$(json_quote "${order_type_value}")" "$(json_quote "${cancel_reason}")" \
+        "$(json_quote "${cancelled_by}")" "$(json_quote "${cancel_authorized_by}")" \
+        "$(json_quote "${cancelled_at}")" "${item_out}"
 }
 
 _api_orders_upsert_customer() {
@@ -141,7 +206,7 @@ _api_orders_upsert_customer() {
 
     if (( customer_id > 0 )); then
         local exists
-        exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id};" 2>/dev/null || printf '0')
+        exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id} AND active = 1;" 2>/dev/null || printf '0')
         (( ${exists:-0} > 0 )) || { AUTH_ERROR="El cliente no existe."; return 1; }
         if (( save == 1 )) && [[ -n "${name}" ]]; then
             if ! db_exec "UPDATE Customers
@@ -268,8 +333,11 @@ api_order_create() {
         Efectivo|Transferencia|Tarjeta) ;;
         *) AUTH_ERROR="Método de pago inválido."; return 1 ;;
     esac
+
+    local initial_stage
     case "${status}" in
-        pending|finished) ;;
+        draft|pending|preparing|confirmed|paid|delivered) initial_stage="${status}" ;;
+        finished) initial_stage="delivered" ;;
         *) AUTH_ERROR="Estado inicial de pedido inválido."; return 1 ;;
     esac
     [[ "${save_customer}" == "1" ]] || save_customer=0
@@ -285,10 +353,10 @@ api_order_create() {
 
     if ! db_exec "INSERT INTO Sales (timestamp, customer_id, subtotal_amount, discount_type,
                                     discount_value, discount_amount, total_amount, payment_method,
-                                    status, notes, created_by, stock_applied, order_type)
+                                    status, notes, created_by, stock_applied, order_type, order_stage)
                   VALUES (datetime('now', 'localtime'), ${ORDER_CUSTOMER_ID}, 0, 'none', 0, 0, 0,
                           $(db_quote "${payment_method}"), 'pending', $(db_quote "${notes}"),
-                          $(db_quote "${AUTH_USER:-sistema}"), 0, 'order');"; then
+                          $(db_quote "${AUTH_USER:-sistema}"), 0, 'order', $(db_quote "${initial_stage}"));"; then
         AUTH_ERROR="${DB_LAST_ERROR:-No se pudo crear el pedido.}"
         tx_rollback
         return 1
@@ -305,7 +373,7 @@ api_order_create() {
         return 1
     fi
 
-    if [[ "${status}" == "finished" ]]; then
+    if [[ "${initial_stage}" == "confirmed" || "${initial_stage}" == "paid" || "${initial_stage}" == "delivered" ]]; then
         if ! db_exec "UPDATE Sales SET status = 'finished' WHERE id = ${ORDER_ID};"; then
             AUTH_ERROR="${DB_LAST_ERROR:-No se pudo finalizar el pedido. Verifique el stock.}"
             tx_rollback
@@ -335,35 +403,54 @@ api_order_update() {
 
     [[ "${order_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido inválido."; return 1; }
 
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
     local row current_customer current_payment current_notes current_discount_type
-    local current_discount_value current_status stock_applied order_type
-    row=$(db_query "SELECT COALESCE(customer_id, 0), payment_method, COALESCE(notes, ''),
-                           discount_type, discount_value, status, stock_applied, order_type
-                    FROM Sales WHERE id = ${order_id};")
+    local current_discount_value current_stage current_status stock_applied order_type
+    row=$(db_query "SELECT COALESCE(s.customer_id, 0), s.payment_method, COALESCE(s.notes, ''),
+                           s.discount_type, s.discount_value, ${stage_expr}, s.status,
+                           s.stock_applied, s.order_type
+                    FROM Sales s WHERE s.id = ${order_id};")
     [[ -z "${row}" ]] && { AUTH_ERROR="El pedido no existe."; return 2; }
     IFS='|' read -r current_customer current_payment current_notes current_discount_type \
-        current_discount_value current_status stock_applied order_type <<< "${row}"
+        current_discount_value current_stage current_status stock_applied order_type <<< "${row}"
     [[ "${order_type}" == "order" ]] || { AUTH_ERROR="El registro no es un pedido de cliente."; return 2; }
+
+    if ! api_orders_stage_is_early "${current_stage}"; then
+        AUTH_ERROR="Los pedidos confirmados, pagados o entregados son inmutables. Use la anulación con motivo y PIN."
+        return 1
+    fi
 
     [[ "${customer_id}" == "-1" ]] && customer_id="${current_customer}"
     [[ "${payment_method}" == "__KEEP__" ]] && payment_method="${current_payment}"
     [[ "${notes}" == "__KEEP__" ]] && notes="${current_notes}"
     [[ "${discount_type}" == "__KEEP__" ]] && discount_type="${current_discount_type}"
     [[ "${discount_value}" == "__KEEP__" ]] && discount_value="${current_discount_value}"
-    [[ "${status}" == "__KEEP__" ]] && status="${current_status}"
+    [[ "${status}" == "__KEEP__" ]] && status="${current_stage}"
 
     case "${payment_method}" in
         Efectivo|Transferencia|Tarjeta) ;;
         *) AUTH_ERROR="Método de pago inválido."; return 1 ;;
     esac
+
+    local next_stage
     case "${status}" in
-        pending|finished|cancel) ;;
+        cancel) AUTH_ERROR="Use la anulación con motivo y PIN."; return 1 ;;
+        finished) next_stage="delivered" ;;
+        draft|pending|preparing|confirmed|paid|delivered) next_stage="${status}" ;;
         *) AUTH_ERROR="Estado de pedido inválido."; return 1 ;;
     esac
+    if ! api_orders_can_transition "${current_stage}" "${next_stage}"; then
+        AUTH_ERROR="Transición de estado no permitida: ${current_stage} → ${next_stage}."
+        return 1
+    fi
+    local next_status
+    next_status=$(api_orders_stage_status "${next_stage}") || { AUTH_ERROR="Estado de pedido inválido."; return 1; }
+
     [[ "${customer_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Cliente inválido."; return 1; }
     if (( customer_id > 0 )); then
         local customer_exists
-        customer_exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id};" 2>/dev/null || printf '0')
+        customer_exists=$(db_scalar "SELECT COUNT(*) FROM Customers WHERE id = ${customer_id} AND active = 1;" 2>/dev/null || printf '0')
         (( ${customer_exists:-0} > 0 )) || { AUTH_ERROR="El cliente no existe."; return 1; }
     fi
 
@@ -402,8 +489,11 @@ api_order_update() {
         return 1
     fi
 
-    if [[ "${status}" != "${current_status}" ]]; then
-        if ! db_exec "UPDATE Sales SET status = $(db_quote "${status}") WHERE id = ${order_id};"; then
+    if [[ "${next_stage}" != "${current_stage}" || "${next_status}" != "${current_status}" ]]; then
+        if ! db_exec "UPDATE Sales
+                         SET order_stage = $(db_quote "${next_stage}"),
+                             status = $(db_quote "${next_status}")
+                       WHERE id = ${order_id};"; then
             AUTH_ERROR="${DB_LAST_ERROR:-No se pudo cambiar el estado del pedido. Verifique el stock.}"
             tx_rollback
             return 1
@@ -425,19 +515,33 @@ api_order_set_status() {
 
     [[ "${order_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido inválido."; return 1; }
     case "${status}" in
-        pending|finished|cancel) ;;
+        cancel) AUTH_ERROR="Use la anulación con motivo y PIN."; return 1 ;;
+        finished) status="delivered" ;;
+        draft|pending|preparing|confirmed|paid|delivered) ;;
         *) AUTH_ERROR="Estado de pedido inválido."; return 1 ;;
     esac
 
-    local row order_type current_status
-    row=$(db_query "SELECT order_type, status FROM Sales WHERE id = ${order_id};")
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
+    local row order_type current_stage current_status
+    row=$(db_query "SELECT s.order_type, ${stage_expr}, s.status FROM Sales s WHERE s.id = ${order_id};")
     [[ -z "${row}" ]] && { AUTH_ERROR="El pedido no existe."; return 2; }
-    IFS='|' read -r order_type current_status <<< "${row}"
+    IFS='|' read -r order_type current_stage current_status <<< "${row}"
     [[ "${order_type}" == "order" ]] || { AUTH_ERROR="El registro no es un pedido de cliente."; return 2; }
-    [[ "${status}" != "${current_status}" ]] || return 0
+    [[ "${status}" != "${current_stage}" ]] || return 0
+
+    if ! api_orders_can_transition "${current_stage}" "${status}"; then
+        AUTH_ERROR="Transición de estado no permitida: ${current_stage} → ${status}."
+        return 1
+    fi
+    local next_status
+    next_status=$(api_orders_stage_status "${status}") || { AUTH_ERROR="Estado de pedido inválido."; return 1; }
 
     db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
-    if ! db_exec "UPDATE Sales SET status = $(db_quote "${status}") WHERE id = ${order_id};"; then
+    if ! db_exec "UPDATE Sales
+                     SET order_stage = $(db_quote "${status}"),
+                         status = $(db_quote "${next_status}")
+                   WHERE id = ${order_id};"; then
         AUTH_ERROR="${DB_LAST_ERROR:-No se pudo cambiar el estado del pedido. Verifique el stock.}"
         return 1
     fi
@@ -445,21 +549,21 @@ api_order_set_status() {
 }
 
 api_order_delete() {
-    local order_id="${1:-0}"
+    local order_id="${1:-0}" reason="${2:-}" pin="${3:-}"
     AUTH_ERROR=""
 
     [[ "${order_id}" =~ ^[0-9]+$ ]] || { AUTH_ERROR="Pedido inválido."; return 1; }
-    local row order_type status stock_applied
-    row=$(db_query "SELECT order_type, status, stock_applied FROM Sales WHERE id = ${order_id};")
+    local stage_expr
+    stage_expr=$(_api_orders_stage_expr "s")
+    local row order_type stage_value
+    row=$(db_query "SELECT s.order_type, ${stage_expr} FROM Sales s WHERE s.id = ${order_id};")
     [[ -z "${row}" ]] && { AUTH_ERROR="El pedido no existe."; return 2; }
-    IFS='|' read -r order_type status stock_applied <<< "${row}"
+    IFS='|' read -r order_type stage_value <<< "${row}"
     [[ "${order_type}" == "order" ]] || { AUTH_ERROR="El registro no es un pedido de cliente."; return 2; }
-    (( stock_applied == 0 )) || { AUTH_ERROR="Reabra el pedido antes de eliminarlo."; return 1; }
-
-    db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
-    if ! db_exec "DELETE FROM Sales WHERE id = ${order_id};"; then
-        AUTH_ERROR="${DB_LAST_ERROR:-No se pudo eliminar el pedido.}"
+    api_orders_stage_is_early "${stage_value}" || {
+        AUTH_ERROR="Solo los pedidos en borrador, pendiente o en preparación pueden eliminarse. Use la anulación con motivo y PIN."
         return 1
-    fi
-    return 0
+    }
+
+    api_sales_cancel "${order_id}" "${reason}" "${pin}"
 }

@@ -1,0 +1,44 @@
+<section class="manager">
+    <div class="manager-toolbar card">
+        <div class="manager-filters">
+            <label class="search-field">
+                <span>Buscar movimiento</span>
+                <input type="search" data-audit-search placeholder="Usuario, acción, entidad o detalle…">
+            </label>
+        </div>
+    </div>
+
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">InventoryJournal</span>
+                <h3>Historial completo de movimientos</h3>
+            </div>
+            <span class="badge badge-soft" data-audit-count>0 movimientos</span>
+        </header>
+        <div class="table-responsive">
+            <table class="audit-table">
+                <thead>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Usuario</th>
+                        <th>Acción</th>
+                        <th>Entidad</th>
+                        <th>Referencias</th>
+                        <th>Estado</th>
+                        <th>Detalle</th>
+                    </tr>
+                </thead>
+                <tbody data-audit-body></tbody>
+            </table>
+        </div>
+        <div class="empty-state" data-audit-empty hidden>
+            <strong>No hay movimientos para mostrar</strong>
+            <span>Ajuste la búsqueda o realice una operación en el sistema.</span>
+        </div>
+        <erp-pagination data-audit-pagination></erp-pagination>
+    </article>
+</section>
+
+<erp-modal id="audit-entry-modal" title="Detalle de auditoría" size="wide"></erp-modal>
+<erp-modal id="audit-entity-modal" title="Detalle de la entidad" size="wide"></erp-modal>

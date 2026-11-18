@@ -143,3 +143,29 @@
         </div>
     </form>
 </erp-modal>
+
+<erp-modal id="production-modal" title="Registrar producción" size="wide">
+    <form class="form-stack" data-production-form>
+        <div class="form-grid">
+            <label class="field">
+                <span>Cantidad de unidades</span>
+                <input type="number" min="1" step="1" data-production-quantity value="1">
+            </label>
+            <label class="field">
+                <span>Costo unitario</span>
+                <input type="number" min="0" step="0.01" data-production-cost value="0">
+            </label>
+        </div>
+        <p class="form-note" data-production-note></p>
+        <div class="stock-consumption" data-production-inputs></div>
+        <label class="field">
+            <span>Notas del lote</span>
+            <input type="text" maxlength="200" data-production-notes placeholder="Opcional: observaciones del lote">
+        </label>
+        <p class="form-error" data-production-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-production-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-production-submit>Registrar lote</button>
+        </div>
+    </form>
+</erp-modal>

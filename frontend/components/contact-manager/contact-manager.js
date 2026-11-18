@@ -10,6 +10,8 @@
             super();
             this._started = false;
             this._contacts = { suppliers: [], customers: [] };
+            this._editingSupplier = 0;
+            this._editingCustomer = 0;
         }
 
         connectedCallback() {
@@ -141,6 +143,8 @@
                             <small>${escape(supplier.address || 'Sin dirección')} · última compra ${escape(ErpUI.formatDateTime(supplier.last_purchase))}</small>
                         </div>
                         <div class="inline-actions">
+                            <button class="btn primary small" type="button" data-edit-supplier>Editar</button>
+                            <button class="btn ghost small" type="button" data-delete-supplier>Eliminar</button>
                             ${supplier.phone ? `<button class="btn ghost small" type="button" data-copy-detail-phone="${escape(supplier.phone)}">Copiar teléfono</button>` : ''}
                             ${supplier.phone ? `<a class="btn ghost small" href="tel:${escape(supplier.phone)}">Llamar</a>` : ''}
                             ${supplier.email ? `<a class="btn ghost small" href="mailto:${escape(supplier.email)}">Escribir</a>` : ''}
@@ -157,6 +161,11 @@
                 this._detailModal.setFooter('');
                 const copy = this._detailModal.querySelector('[data-copy-detail-phone]');
                 if (copy) copy.addEventListener('click', () => ErpUI.copyText(copy.dataset.copyDetailPhone, 'Teléfono'));
+                this._detailModal.querySelector('[data-edit-supplier]')?.addEventListener('click', () => {
+                    this._detailModal.close();
+                    this._openSupplierForm(supplier);
+                });
+                this._detailModal.querySelector('[data-delete-supplier]')?.addEventListener('click', () => this._deleteSupplier(supplier));
                 await this._detailModal.open();
             } catch (error) {
                 ErpUI.toast('No se pudo abrir el proveedor', error.message, 'error');
@@ -180,6 +189,8 @@
                         <small>${escape(customer.phone || 'Sin teléfono')}</small>
                     </div>
                     <div class="inline-actions">
+                        <button class="btn primary small" type="button" data-edit-customer>Editar</button>
+                        <button class="btn ghost small" type="button" data-delete-customer>Eliminar</button>
                         ${customer.phone ? `<button class="btn ghost small" type="button" data-copy-detail-phone="${escape(customer.phone)}">Copiar teléfono</button>` : ''}
                         ${customer.phone ? `<a class="btn ghost small" href="tel:${escape(customer.phone)}">Llamar</a>` : ''}
                         ${customer.email ? `<a class="btn ghost small" href="mailto:${escape(customer.email)}">Escribir</a>` : ''}
@@ -189,23 +200,77 @@
             this._detailModal.setFooter('');
             const copy = this._detailModal.querySelector('[data-copy-detail-phone]');
             if (copy) copy.addEventListener('click', () => ErpUI.copyText(copy.dataset.copyDetailPhone, 'Teléfono'));
+            this._detailModal.querySelector('[data-edit-customer]')?.addEventListener('click', () => {
+                this._detailModal.close();
+                this._openCustomerForm(customer);
+            });
+            this._detailModal.querySelector('[data-delete-customer]')?.addEventListener('click', () => this._deleteCustomer(customer));
             this._detailModal.open();
         }
 
-        _openSupplierForm() {
+        _openSupplierForm(supplier = null) {
             const form = this.querySelector('[data-supplier-form]');
+            const submit = this.querySelector('[data-supplier-submit]');
+            this._editingSupplier = supplier ? Number(supplier.id) : 0;
             form.reset();
             this.querySelector('[data-supplier-error]').hidden = true;
-            this._supplierModal.setTitle('Nuevo proveedor');
+            if (supplier) {
+                this.querySelector('[data-supplier-name]').value = supplier.name || '';
+                this.querySelector('[data-supplier-contact]').value = supplier.contact || '';
+                this.querySelector('[data-supplier-phone]').value = supplier.phone || '';
+                this.querySelector('[data-supplier-email]').value = supplier.email || '';
+                this.querySelector('[data-supplier-address]').value = supplier.address || '';
+                this._supplierModal.setTitle('Editar proveedor');
+                submit.textContent = 'Guardar cambios';
+            } else {
+                this._supplierModal.setTitle('Nuevo proveedor');
+                submit.textContent = 'Crear proveedor';
+            }
             this._supplierModal.open();
         }
 
-        _openCustomerForm() {
+        _openCustomerForm(customer = null) {
             const form = this.querySelector('[data-customer-form]');
+            const submit = this.querySelector('[data-customer-submit]');
+            this._editingCustomer = customer ? Number(customer.id) : 0;
             form.reset();
             this.querySelector('[data-customer-error]').hidden = true;
-            this._customerModal.setTitle('Nuevo cliente');
+            if (customer) {
+                this.querySelector('[data-customer-name]').value = customer.name || '';
+                this.querySelector('[data-customer-type]').value = customer.type || 'Minorista';
+                this.querySelector('[data-customer-phone]').value = customer.phone || '';
+                this.querySelector('[data-customer-email]').value = customer.email || '';
+                this._customerModal.setTitle('Editar cliente');
+                submit.textContent = 'Guardar cambios';
+            } else {
+                this._customerModal.setTitle('Nuevo cliente');
+                submit.textContent = 'Crear cliente';
+            }
             this._customerModal.open();
+        }
+
+        async _deleteSupplier(supplier) {
+            if (!window.confirm(`¿Eliminar al proveedor "${supplier.name}"? Se ocultará de la agenda y sus compras se conservarán.`)) return;
+            try {
+                await ErpUI.api(`/api/suppliers/${supplier.id}`, { method: 'DELETE' });
+                this._detailModal.close();
+                ErpUI.toast('Proveedor eliminado', `"${supplier.name}" se ocultó de la agenda.`);
+                await this._loadContacts();
+            } catch (error) {
+                ErpUI.toast('No se pudo eliminar', error.message, 'error');
+            }
+        }
+
+        async _deleteCustomer(customer) {
+            if (!window.confirm(`¿Eliminar al cliente "${customer.name}"? Se ocultará de la agenda y sus ventas se conservarán.`)) return;
+            try {
+                await ErpUI.api(`/api/customers/${customer.id}`, { method: 'DELETE' });
+                this._detailModal.close();
+                ErpUI.toast('Cliente eliminado', `"${customer.name}" se ocultó de la agenda.`);
+                await this._loadContacts();
+            } catch (error) {
+                ErpUI.toast('No se pudo eliminar', error.message, 'error');
+            }
         }
 
         async _submitSupplier(event) {
@@ -214,11 +279,13 @@
             const button = this.querySelector('[data-supplier-submit]');
             error.hidden = true;
             button.disabled = true;
+            const editingId = this._editingSupplier;
+            const name = this.querySelector('[data-supplier-name]').value.trim();
             try {
-                const payload = await ErpUI.api('/api/suppliers', {
-                    method: 'POST',
+                const payload = await ErpUI.api(editingId ? `/api/suppliers/${editingId}` : '/api/suppliers', {
+                    method: editingId ? 'PUT' : 'POST',
                     body: {
-                        name: this.querySelector('[data-supplier-name]').value.trim(),
+                        name,
                         contact: this.querySelector('[data-supplier-contact]').value.trim(),
                         phone: this.querySelector('[data-supplier-phone]').value.trim(),
                         email: this.querySelector('[data-supplier-email]').value.trim(),
@@ -226,7 +293,11 @@
                     }
                 });
                 this._supplierModal.close();
-                ErpUI.toast('Proveedor creado', `Proveedor #${payload.supplier_id} agregado a la agenda.`);
+                this._editingSupplier = 0;
+                ErpUI.toast(
+                    editingId ? 'Proveedor actualizado' : 'Proveedor creado',
+                    editingId ? `"${name}" fue actualizado.` : `Proveedor #${payload.supplier_id} agregado a la agenda.`
+                );
                 await this._loadContacts();
             } catch (requestError) {
                 error.textContent = requestError.message;
@@ -242,18 +313,24 @@
             const button = this.querySelector('[data-customer-submit]');
             error.hidden = true;
             button.disabled = true;
+            const editingId = this._editingCustomer;
+            const name = this.querySelector('[data-customer-name]').value.trim();
             try {
-                const payload = await ErpUI.api('/api/customers', {
-                    method: 'POST',
+                const payload = await ErpUI.api(editingId ? `/api/customers/${editingId}` : '/api/customers', {
+                    method: editingId ? 'PUT' : 'POST',
                     body: {
-                        name: this.querySelector('[data-customer-name]').value.trim(),
+                        name,
                         type: this.querySelector('[data-customer-type]').value,
                         phone: this.querySelector('[data-customer-phone]').value.trim(),
                         email: this.querySelector('[data-customer-email]').value.trim()
                     }
                 });
                 this._customerModal.close();
-                ErpUI.toast('Cliente creado', `Cliente #${payload.customer_id} agregado a la agenda.`);
+                this._editingCustomer = 0;
+                ErpUI.toast(
+                    editingId ? 'Cliente actualizado' : 'Cliente creado',
+                    editingId ? `"${name}" fue actualizado.` : `Cliente #${payload.customer_id} agregado a la agenda.`
+                );
                 await this._loadContacts();
             } catch (requestError) {
                 error.textContent = requestError.message;

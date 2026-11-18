@@ -86,6 +86,9 @@ b0 = ȳ - b1·x̄
 - `combos`: los 3 pares con mayor correlación positiva y co-ocurrencia.
 - `substitutes`: hasta 3 pares con correlación negativa.
 - La matriz de correlación se muestra como mapa de calor.
+- El dashboard usa la vista compacta (6 productos, 3 combos, 3 sustitutos).
+  La página `/inteligencia` usa `/api/analytics/basket` para mostrar la matriz y
+  todos los pares, con búsqueda, orden por valores y paginación.
 
 Ejemplo de los datos demo: la correlación entre los dos productos más vendidos
 es aproximadamente `0.9846`.

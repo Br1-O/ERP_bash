@@ -51,6 +51,29 @@
             this._items = this.querySelector('[data-order-items]');
             this._totals = this.querySelector('[data-order-totals]');
             this._invoice = this.querySelector('#order-invoice');
+            this._saleModal = this.querySelector('#sale-form-modal');
+            this._saleForm = this.querySelector('[data-sale-form]');
+            this._saleCustomer = this.querySelector('[data-sale-customer]');
+            this._salePayment = this.querySelector('[data-sale-payment]');
+            this._saleDiscountType = this.querySelector('[data-sale-discount-type]');
+            this._saleDiscountValue = this.querySelector('[data-sale-discount-value]');
+            this._saleDiscountValueField = this.querySelector('[data-sale-discount-value-field]');
+            this._saleDiscountValueLabel = this.querySelector('[data-sale-discount-value-label]');
+            this._saleItems = this.querySelector('[data-sale-items]');
+            this._saleSubtotal = this.querySelector('[data-sale-subtotal]');
+            this._saleDiscountRow = this.querySelector('[data-sale-discount-row]');
+            this._saleDiscountLabel = this.querySelector('[data-sale-discount-label]');
+            this._saleDiscount = this.querySelector('[data-sale-discount]');
+            this._saleTotal = this.querySelector('[data-sale-total]');
+            this._saleError = this.querySelector('[data-sale-error]');
+            this._saleSubmit = this.querySelector('[data-sale-submit]');
+            this._cancelModal = this.querySelector('#cancel-order-modal');
+            this._cancelForm = this.querySelector('[data-cancel-form]');
+            this._cancelSummary = this.querySelector('[data-cancel-summary]');
+            this._cancelReason = this.querySelector('[data-cancel-reason]');
+            this._cancelPin = this.querySelector('[data-cancel-pin]');
+            this._cancelError = this.querySelector('[data-cancel-error]');
+            this._cancelSubmit = this.querySelector('[data-cancel-submit]');
 
             this._bind();
             await this._loadCatalog();
@@ -58,12 +81,38 @@
         }
 
         _bind() {
+            this.querySelector('[data-create-sale]').addEventListener('click', () => this._openSaleForm());
             this.querySelector('[data-create-order]').addEventListener('click', () => this._openForm());
+            this._saleForm.addEventListener('submit', (event) => this._submitSale(event));
+            this.querySelector('[data-sale-add-item]').addEventListener('click', () => {
+                this._addSaleItemRow();
+                this._renderSaleTotals();
+            });
+            this.querySelector('[data-sale-cancel]').addEventListener('click', () => this._saleModal.close());
+            this._saleDiscountType.addEventListener('change', () => this._syncSaleDiscount());
+            this._saleDiscountValue.addEventListener('input', () => this._renderSaleTotals());
+            this._saleItems.addEventListener('click', (event) => {
+                const remove = event.target.closest('[data-sale-item-remove]');
+                if (remove) {
+                    remove.closest('.sale-item-row').remove();
+                    if (!this._saleItems.querySelector('.sale-item-row')) this._addSaleItemRow();
+                    this._renderSaleTotals();
+                }
+            });
+            this._saleItems.addEventListener('change', (event) => {
+                if (event.target.matches('[data-sale-item-product]')) {
+                    this._saleProductChanged(event.target.closest('.sale-item-row'));
+                }
+                this._renderSaleTotals();
+            });
+            this._saleItems.addEventListener('input', () => this._renderSaleTotals());
             this.querySelector('[data-order-add-item]').addEventListener('click', () => {
                 this._addItemRow();
                 this._renderTotals();
             });
             this.querySelector('[data-order-cancel]').addEventListener('click', () => this._formModal.close());
+            this.querySelector('[data-cancel-close]').addEventListener('click', () => this._cancelModal.close());
+            this._cancelForm.addEventListener('submit', (event) => this._submitCancel(event));
             this._form.addEventListener('submit', (event) => this._submit(event));
             this._customerSelect.addEventListener('change', () => this._customerChanged());
             this._items.addEventListener('click', (event) => {
@@ -173,6 +222,197 @@
             this._customerEmail.value = customer?.email || '';
         }
 
+        _saleProductOptions(selectedId = 0) {
+            const available = (this._products || []).filter((product) =>
+                Number(product.active) === 1 && Number(product.stock) > 0);
+            return '<option value="0">Seleccione un producto…</option>' + available.map((product) => {
+                const selected = Number(product.id) === Number(selectedId) ? ' selected' : '';
+                return `<option value="${Number(product.id)}" data-price="${Number(product.price) || 0}" data-stock="${Number(product.stock) || 0}"${selected}>${escape(product.name)}${Number(product.is_combo) === 1 ? ' (combo)' : ''} · ${money(product.price)} · ${number(product.stock)} u.</option>`;
+            }).join('');
+        }
+
+        _addSaleItemRow(productId = 0) {
+            const available = (this._products || []).filter((product) =>
+                Number(product.active) === 1 && Number(product.stock) > 0);
+            if (!available.length) {
+                ErpUI.toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
+                return;
+            }
+            const selectedId = Number(productId) || Number(available[0].id);
+            const row = document.createElement('div');
+            row.className = 'sale-item-row';
+            row.innerHTML = `
+                <label class="field">
+                    <span>Producto</span>
+                    <select data-sale-item-product>${this._saleProductOptions(selectedId)}</select>
+                </label>
+                <label class="field">
+                    <span>Cantidad</span>
+                    <input type="number" min="1" step="1" value="1" data-sale-item-quantity>
+                </label>
+                <span class="line-total">$0.00</span>
+                <button type="button" class="icon-button remove-item" data-sale-item-remove aria-label="Quitar ítem">×</button>`;
+            this._saleItems.append(row);
+            this._updateSaleLine(row);
+        }
+
+        _saleProductChanged(row) {
+            if (!row) return;
+            const select = row.querySelector('[data-sale-item-product]');
+            const quantity = row.querySelector('[data-sale-item-quantity]');
+            const stock = Number(select.selectedOptions[0]?.dataset.stock) || 0;
+            if (Number(quantity.value) > stock) quantity.value = String(stock);
+            this._updateSaleLine(row);
+        }
+
+        _updateSaleLine(row) {
+            const select = row.querySelector('[data-sale-item-product]');
+            const quantity = row.querySelector('[data-sale-item-quantity]');
+            const lineTotal = row.querySelector('.line-total');
+            const option = select?.selectedOptions[0];
+            const price = Number(option?.dataset.price) || 0;
+            const stock = Number(option?.dataset.stock) || 1;
+            let value = Number(quantity?.value) || 0;
+            if (value > stock) {
+                value = stock;
+                quantity.value = String(stock);
+            }
+            const billing = window.ErpBilling;
+            lineTotal.textContent = billing
+                ? billing.Money.formatCents((billing.Money.toCents(price) || 0) * value)
+                : money(price * value);
+        }
+
+        _saleTotals() {
+            const billing = window.ErpBilling;
+            let subtotalCents = 0;
+            let subtotal = 0;
+            this._saleItems.querySelectorAll('.sale-item-row').forEach((row) => {
+                const option = row.querySelector('[data-sale-item-product]')?.selectedOptions[0];
+                const quantity = Number(row.querySelector('[data-sale-item-quantity]')?.value) || 0;
+                const price = Number(option?.dataset.price) || 0;
+                if (billing) {
+                    subtotalCents += (billing.Money.toCents(price) || 0) * quantity;
+                } else {
+                    subtotal += price * quantity;
+                }
+            });
+            const type = this._saleDiscountType.value || 'none';
+            const rawValue = this._saleDiscountValue.value || '0';
+            if (billing) {
+                return { billing, subtotalCents, type, rawValue, result: billing.apply(type, subtotalCents, rawValue) };
+            }
+            const fallbackSubtotal = Math.max(0, subtotal);
+            return {
+                billing: null,
+                subtotalCents: Math.round(fallbackSubtotal * 100),
+                type,
+                rawValue,
+                result: { discountCents: 0, totalCents: Math.round(fallbackSubtotal * 100) }
+            };
+        }
+
+        _syncSaleDiscount() {
+            const type = this._saleDiscountType.value || 'none';
+            const strategy = window.ErpBilling?.strategies?.[type];
+            this._saleDiscountValueField.hidden = type === 'none';
+            this._saleDiscountValue.disabled = type === 'none';
+            if (type === 'none') this._saleDiscountValue.value = '0';
+            this._saleDiscountValueLabel.textContent = strategy?.valueLabel || 'Valor del descuento';
+            this._renderSaleTotals();
+        }
+
+        _renderSaleTotals() {
+            const totals = this._saleTotals();
+            const billing = totals.billing;
+            this._saleSubtotal.textContent = billing
+                ? billing.Money.formatCents(totals.subtotalCents)
+                : money(totals.subtotalCents / 100);
+            this._saleDiscountRow.hidden = totals.type === 'none';
+            this._saleDiscountLabel.textContent = totals.type === 'percent' ? 'Descuento porcentual' : 'Descuento';
+            this._saleDiscount.textContent = totals.result
+                ? `-${billing ? billing.Money.formatCents(totals.result.discountCents) : money(totals.result.discountCents / 100)}`
+                : '—';
+            this._saleTotal.textContent = totals.result
+                ? (billing ? billing.Money.formatCents(totals.result.totalCents) : money(totals.result.totalCents / 100))
+                : '—';
+        }
+
+        _openSaleForm() {
+            if (!(this._products || []).some((product) =>
+                Number(product.active) === 1 && Number(product.stock) > 0)) {
+                ErpUI.toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
+                return;
+            }
+            this._saleForm.reset();
+            this._saleCustomer.innerHTML = '<option value="0">Consumidor final</option>' +
+                (this._customers || []).map((customer) =>
+                    `<option value="${Number(customer.id)}">${escape(customer.name)} · ${escape(customer.type)}</option>`).join('');
+            this._salePayment.value = 'Efectivo';
+            this._saleDiscountType.value = 'none';
+            this._saleDiscountValue.value = '0';
+            this._saleItems.innerHTML = '';
+            this._saleError.hidden = true;
+            this._saleError.textContent = '';
+            this._saleSubmit.disabled = false;
+            this._saleSubmit.textContent = 'Registrar venta';
+            this._saleModal.setTitle('Nueva venta');
+            this._syncSaleDiscount();
+            this._addSaleItemRow();
+            this._renderSaleTotals();
+            this._saleModal.open();
+            this._saleCustomer.focus();
+        }
+
+        async _submitSale(event) {
+            event.preventDefault();
+            const items = Array.from(this._saleItems.querySelectorAll('.sale-item-row'))
+                .map((row) => ({
+                    product_id: Number(row.querySelector('[data-sale-item-product]')?.value) || 0,
+                    quantity: Number(row.querySelector('[data-sale-item-quantity]')?.value) || 0
+                }))
+                .filter((item) => item.product_id > 0 && item.quantity > 0);
+
+            this._saleError.hidden = true;
+            if (!items.length) {
+                this._saleError.textContent = 'Agregue al menos un producto con cantidad válida.';
+                this._saleError.hidden = false;
+                return;
+            }
+
+            const totals = this._saleTotals();
+            if (!totals.result) {
+                this._saleError.textContent = 'El descuento ingresado no es válido para el subtotal de la venta.';
+                this._saleError.hidden = false;
+                return;
+            }
+
+            this._saleSubmit.disabled = true;
+            this._saleSubmit.textContent = 'Registrando…';
+            try {
+                const payload = await ErpUI.api('/api/sales', {
+                    method: 'POST',
+                    body: {
+                        customer_id: Number(this._saleCustomer.value) || 0,
+                        payment_method: this._salePayment.value || 'Efectivo',
+                        discount_type: totals.type,
+                        discount_value: totals.type === 'none' ? '0' : totals.rawValue,
+                        items
+                    }
+                });
+                this._saleModal.close();
+                ErpUI.toast('Venta registrada', `Venta #${payload.sale_id} por ${money(payload.total)}.`);
+                await this._loadCatalog();
+                await this._loadOrders();
+            } catch (error) {
+                this._saleError.textContent = error.message;
+                this._saleError.hidden = false;
+            } finally {
+                this._saleSubmit.disabled = false;
+                this._saleSubmit.textContent = 'Registrar venta';
+            }
+        }
+
         _getItems() {
             return Array.from(this._items.querySelectorAll('.order-item-row'))
                 .map((row) => {
@@ -221,6 +461,7 @@
                 this._customerPhone.value = order.customer_phone || '';
                 this._customerEmail.value = order.customer_email || '';
                 this._payment.value = order.payment_method || 'Efectivo';
+                this._state.innerHTML = this._stateOptions(order);
                 this._state.value = order.status || 'pending';
                 this._discountType.value = order.discount_type || 'none';
                 this._discountValue.value = String(Number(order.discount_value) || 0);
@@ -230,6 +471,7 @@
                 this._customerSelect.value = '0';
                 this._customerChanged();
                 this._payment.value = 'Efectivo';
+                this._state.innerHTML = this._stateOptions();
                 this._state.value = 'pending';
                 this._discountType.value = 'none';
                 this._discountValue.value = '0';
@@ -320,31 +562,70 @@
                 if (requestId !== this._requestId) return;
                 this._body.innerHTML = '';
                 this._empty.hidden = false;
-                this._empty.querySelector('strong').textContent = 'No se pudieron cargar los pedidos';
+                this._empty.querySelector('strong').textContent = 'No se pudieron cargar las ventas y pedidos';
                 this._empty.querySelector('span').textContent = error.message;
             }
         }
 
         _statusLabel(status) {
-            if (status === 'finished') return 'Finalizado';
-            if (status === 'cancel') return 'Cancelado';
-            return 'Pendiente';
+            const labels = {
+                draft: 'Borrador',
+                pending: 'Pendiente',
+                preparing: 'En preparación',
+                confirmed: 'Confirmado',
+                paid: 'Pagado',
+                delivered: 'Entregado',
+                cancel: 'Anulado',
+                finished: 'Finalizado'
+            };
+            return labels[status] || status || 'Pendiente';
+        }
+
+        _stockLabel(order) {
+            if (order.status === 'cancel') return 'Registro anulado';
+            return Number(order.stock_applied) === 1 ? 'Stock aplicado' : 'Stock sin aplicar';
+        }
+
+        _stateOptions(order) {
+            const transitions = {
+                draft: ['pending', 'preparing', 'confirmed'],
+                pending: ['preparing', 'confirmed'],
+                preparing: ['confirmed'],
+                confirmed: ['paid', 'delivered'],
+                paid: ['delivered']
+            };
+            const initial = ['draft', 'pending', 'preparing', 'confirmed'];
+            const stages = order ? [order.status, ...(transitions[order.status] || [])] : initial;
+            return [...new Set(stages)].map((stage) =>
+                `<option value="${stage}">${this._statusLabel(stage)}</option>`).join('');
+        }
+
+        _typeLabel(type) {
+            return type === 'direct' ? 'Venta directa' : 'Pedido';
         }
 
         _renderOrders(items, total) {
-            this._count.textContent = `${total} pedido${total === 1 ? '' : 's'}`;
+            this._count.textContent = `${total} registro${total === 1 ? '' : 's'}`;
             this._pagination.setData(this._page, this._pages);
             this._empty.hidden = items.length > 0;
-            this._body.innerHTML = items.map((order) => `
+            this._body.innerHTML = items.map((order) => {
+                const typeLabel = this._typeLabel(order.order_type);
+                const typeClass = order.order_type === 'direct' ? 'badge-accent' : 'badge-soft';
+                return `
                 <tr class="order-row" data-order-id="${Number(order.id)}">
                     <td>#${Number(order.id)}</td>
+                    <td><span class="badge ${typeClass}">${typeLabel}</span></td>
                     <td>${escape(ErpUI.formatDateTime(order.date))}</td>
                     <td>${escape(order.customer)}</td>
                     <td>${number(order.items, 0)}</td>
                     <td>${number(order.units, 0)}</td>
                     <td>${money(order.total)}</td>
-                    <td><span class="order-status-pill ${escape(order.status)}">${this._statusLabel(order.status)}</span></td>
-                </tr>`).join('');
+                    <td>
+                        <span class="order-status-pill ${escape(order.status)}">${this._statusLabel(order.status)}</span>
+                        <small class="order-stock-note">${this._stockLabel(order)}</small>
+                    </td>
+                </tr>`;
+            }).join('');
         }
 
         async _openDetail(orderId) {
@@ -358,20 +639,51 @@
                         <td>${money(item.unit_price)}</td>
                         <td>${money(item.subtotal)}</td>
                     </tr>`).join('');
+                const orderType = order.order_type === 'direct' ? 'direct' : 'order';
+                const isOrder = orderType === 'order';
+                const typeLabel = this._typeLabel(orderType);
                 const actions = [];
-                if (Number(order.stock_applied) === 0) actions.push('<button class="btn primary small" type="button" data-order-action="edit">Editar</button>');
-                if (order.status !== 'finished') actions.push('<button class="btn ghost small" type="button" data-order-action="finish">Finalizar</button>');
-                if (order.status === 'finished') actions.push('<button class="btn ghost small" type="button" data-order-action="invoice">Facturar / PDF</button>');
-                if (order.status !== 'pending') actions.push('<button class="btn ghost small" type="button" data-order-action="reopen">Reabrir</button>');
-                if (order.status !== 'cancel') actions.push('<button class="btn ghost small" type="button" data-order-action="cancel">Cancelar</button>');
-                if (Number(order.stock_applied) === 0) actions.push('<button class="btn ghost small" type="button" data-order-action="delete">Eliminar</button>');
+                const early = ['draft', 'pending', 'preparing'].includes(order.status);
+                const final = ['paid', 'delivered'].includes(order.status);
+                if (isOrder && early) {
+                    actions.push('<button class="btn primary small" type="button" data-order-action="edit">Editar</button>');
+                }
+                if (isOrder && order.status === 'draft') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:pending">Marcar pendiente</button>');
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:preparing">En preparación</button>');
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:confirmed">Confirmar pedido</button>');
+                } else if (isOrder && order.status === 'pending') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:preparing">En preparación</button>');
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:confirmed">Confirmar pedido</button>');
+                } else if (isOrder && order.status === 'preparing') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:confirmed">Confirmar pedido</button>');
+                } else if (isOrder && order.status === 'confirmed') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:paid">Marcar pagado</button>');
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:delivered">Marcar entregado</button>');
+                } else if (isOrder && order.status === 'paid') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="stage:delivered">Marcar entregado</button>');
+                }
+                if (order.status !== 'cancel') {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="cancel">Anular</button>');
+                }
+                if (final || (order.order_type === 'direct' && order.status === 'delivered')) {
+                    actions.push('<button class="btn ghost small" type="button" data-order-action="invoice">Facturar / PDF</button>');
+                }
 
-                this._detailModal.setTitle(`Pedido #${order.id}`);
+                this._detailModal.setTitle(`${typeLabel} #${order.id}`);
                 this._detailModal.setBody(`
                     <div class="inline-actions">
+                        <span class="badge ${isOrder ? 'badge-soft' : 'badge-accent'}">${typeLabel}</span>
                         <span class="order-status-pill ${escape(order.status)}">${this._statusLabel(order.status)}</span>
+                        <span class="badge badge-soft">${escape(this._stockLabel(order))}</span>
                         <span class="badge badge-soft">${escape(ErpUI.formatDateTime(order.date))}</span>
                     </div>
+                    ${order.status === 'cancel' ? `
+                    <div class="cancel-detail">
+                        <strong>Registro anulado</strong>
+                        <p>${escape(order.cancel_reason || 'Sin motivo registrado.')}</p>
+                        <small>Anulado por ${escape(order.cancelled_by || '—')} · Autorizado por ${escape(order.cancel_authorized_by || '—')} · ${escape(ErpUI.formatDateTime(order.cancelled_at))}</small>
+                    </div>` : ''}
                     <div class="detail-grid">
                         <div class="detail-metric"><span>Cliente</span><strong>${escape(order.customer)}</strong></div>
                         <div class="detail-metric"><span>Pago</span><strong>${escape(order.payment_method)}</strong></div>
@@ -391,6 +703,7 @@
                         </table>
                     </div>
                     ${order.notes ? `<p class="form-note">${escape(order.notes)}</p>` : ''}
+                    ${isOrder ? '' : '<p class="form-note">Venta registrada desde el punto de venta. Este registro es de solo lectura; puede anularse con motivo y PIN o facturarse cuando esté entregado.</p>'}
                     <div class="order-detail-actions">${actions.join('')}</div>
                 `);
                 this._detailModal.setFooter('');
@@ -399,44 +712,82 @@
                 });
                 await this._detailModal.open();
             } catch (error) {
-                ErpUI.toast('No se pudo abrir el pedido', error.message, 'error');
+                ErpUI.toast('No se pudo abrir el registro', error.message, 'error');
             }
         }
 
         async _handleAction(action, order) {
+            if (action === 'invoice') {
+                this._detailModal.close();
+                await this._invoice.open(order.order_type === 'direct' ? 'sale' : 'order', order.id);
+                return;
+            }
+            if (action === 'cancel') {
+                this._openCancel(order);
+                return;
+            }
+            if (order.order_type === 'direct') {
+                ErpUI.toast('Registro de solo lectura', 'Las ventas directas no se editan desde este listado.', 'error');
+                return;
+            }
             if (action === 'edit') {
                 this._detailModal.close();
                 this._openForm(order);
                 return;
             }
-            if (action === 'invoice') {
-                this._detailModal.close();
-                await this._invoice.open('order', order.id);
-                return;
-            }
-            if (action === 'delete') {
-                if (!window.confirm(`¿Eliminar el pedido #${order.id}? Esta acción no se puede deshacer.`)) return;
+            if (action.startsWith('stage:')) {
+                const nextStage = action.slice(6);
                 try {
-                    await ErpUI.api(`/api/orders/${order.id}`, { method: 'DELETE' });
+                    await ErpUI.api(`/api/orders/${order.id}/status`, {
+                        method: 'PUT',
+                        body: { status: nextStage }
+                    });
                     this._detailModal.close();
-                    ErpUI.toast('Pedido eliminado', `El pedido #${order.id} fue eliminado.`);
+                    ErpUI.toast('Pedido actualizado', `El pedido #${order.id} pasó a ${this._statusLabel(nextStage).toLowerCase()}.`);
                     await this._loadOrders();
                 } catch (error) {
-                    ErpUI.toast('No se pudo eliminar', error.message, 'error');
+                    ErpUI.toast('No se pudo cambiar el estado', error.message, 'error');
                 }
-                return;
             }
-            const nextStatus = action === 'finish' ? 'finished' : action === 'cancel' ? 'cancel' : 'pending';
+        }
+
+        async _openCancel(order) {
+            this._cancelOrder = order;
+            this._cancelForm.reset();
+            this._cancelError.hidden = true;
+            this._cancelError.textContent = '';
+            this._cancelSummary.textContent = `Se anulará ${order.order_type === 'direct' ? 'la venta' : 'el pedido'} #${order.id} por ${money(order.total)}. El stock se restituirá automáticamente si estaba aplicado.`;
+            await this._cancelModal.ready();
+            this._cancelModal.setTitle(`Anular ${order.order_type === 'direct' ? 'venta' : 'pedido'} #${order.id}`);
+            this._cancelModal.open();
+            window.setTimeout(() => this._cancelReason.focus(), 80);
+        }
+
+        async _submitCancel(event) {
+            event.preventDefault();
+            const order = this._cancelOrder;
+            if (!order) return;
+            this._cancelError.hidden = true;
+            this._cancelSubmit.disabled = true;
+            this._cancelSubmit.textContent = 'Anulando…';
             try {
-                await ErpUI.api(`/api/orders/${order.id}/status`, {
-                    method: 'PUT',
-                    body: { status: nextStatus }
+                const endpoint = order.order_type === 'direct'
+                    ? `/api/sales/${order.id}/cancel`
+                    : `/api/orders/${order.id}/cancel`;
+                await ErpUI.api(endpoint, {
+                    method: 'POST',
+                    body: { reason: this._cancelReason.value.trim(), pin: this._cancelPin.value }
                 });
+                this._cancelModal.close();
                 this._detailModal.close();
-                ErpUI.toast('Pedido actualizado', `El pedido #${order.id} pasó a ${this._statusLabel(nextStatus).toLowerCase()}.`);
+                ErpUI.toast('Registro anulado', `La operación #${order.id} fue anulada y quedó en auditoría.`);
                 await this._loadOrders();
             } catch (error) {
-                ErpUI.toast('No se pudo cambiar el estado', error.message, 'error');
+                this._cancelError.textContent = error.message;
+                this._cancelError.hidden = false;
+            } finally {
+                this._cancelSubmit.disabled = false;
+                this._cancelSubmit.textContent = 'Anular registro';
             }
         }
     }

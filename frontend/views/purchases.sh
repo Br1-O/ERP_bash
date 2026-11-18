@@ -28,8 +28,8 @@ EOF
                 <section class="section-heading">
                     <div>
                         <span class="eyebrow">Abastecimiento</span>
-                        <h2>Reposición inteligente e historial de compras</h2>
-                        <p class="muted">Combine la última compra y la proyección de ventas para generar un pedido listo para enviar al proveedor.</p>
+                        <h2>Reposición inteligente y pedidos de compra</h2>
+                        <p class="muted">Cree pedidos manuales o desde la proyección de consumo, y finalícelos para actualizar stock y costos.</p>
                     </div>
                 </section>
 

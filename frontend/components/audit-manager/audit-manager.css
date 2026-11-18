@@ -1,0 +1,147 @@
+.audit-table td {
+    vertical-align: top;
+}
+
+.audit-link,
+.audit-ref {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent-strong);
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: rgba(215, 166, 74, 0.45);
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+
+.audit-link:hover,
+.audit-ref:hover {
+    color: var(--accent);
+}
+
+.audit-ref-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 180px;
+}
+
+.audit-ref {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-muted);
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.audit-ref:hover {
+    border-color: var(--border-strong);
+    color: var(--accent-strong);
+}
+
+.audit-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-muted);
+    color: var(--text-dim);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.66rem;
+    white-space: nowrap;
+}
+
+.audit-payload {
+    display: block;
+    max-width: 280px;
+    overflow: hidden;
+    color: var(--text-dim);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.68rem;
+    line-height: 1.45;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.audit-detail-button {
+    margin-top: 5px;
+}
+
+.audit-entry-meta {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.audit-entry-payload {
+    max-height: 240px;
+    overflow: auto;
+    padding: 11px 12px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--surface-muted);
+    color: var(--text-soft);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.72rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.audit-raw-payload {
+    margin-top: 8px;
+}
+
+.audit-raw-payload summary {
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.audit-raw-payload pre {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-muted);
+    color: var(--text-soft);
+    font-size: 0.7rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.audit-empty-detail {
+    padding: 11px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 11px;
+    color: var(--text-dim);
+    font-size: 0.76rem;
+}
+
+@media (max-width: 900px) {
+    .audit-entry-meta {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 620px) {
+    .audit-entry-meta {
+        grid-template-columns: 1fr;
+    }
+
+    .audit-payload {
+        max-width: 180px;
+    }
+}

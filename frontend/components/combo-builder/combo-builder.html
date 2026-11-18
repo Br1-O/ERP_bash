@@ -1,0 +1,47 @@
+<erp-modal id="combo-builder-modal" title="Crear combo inteligente" size="wide">
+    <form class="form-stack" data-combo-builder-form>
+        <div class="form-grid">
+            <label class="field span-2">
+                <span>Nombre del combo</span>
+                <input type="text" maxlength="80" data-combo-builder-name required>
+            </label>
+            <label class="field">
+                <span>Categoría</span>
+                <select data-combo-builder-category required></select>
+            </label>
+            <label class="field">
+                <span>Umbral mínimo</span>
+                <input type="number" min="0" step="1" value="5" data-combo-builder-threshold>
+            </label>
+            <label class="field">
+                <span>Costo unitario</span>
+                <input type="number" min="0" step="0.01" value="0" data-combo-builder-cost>
+            </label>
+            <label class="field">
+                <span>Precio de venta</span>
+                <input type="number" min="0" step="0.01" value="0" data-combo-builder-price>
+            </label>
+        </div>
+        <label class="field">
+            <span>Descripción <small class="muted">(opcional)</small></span>
+            <textarea rows="2" maxlength="2000" data-combo-builder-description
+                      placeholder="Ej.: combinación sugerida por correlación de ventas"></textarea>
+        </label>
+        <div class="combo-builder-editor">
+            <header class="combo-builder-header">
+                <div>
+                    <strong>Productos incluidos</strong>
+                    <p class="muted">Los productos sugeridos ya están cargados. Puede agregar, quitar o ajustar cantidades.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-combo-builder-add>+ Agregar producto</button>
+            </header>
+            <div class="combo-builder-rows" data-combo-builder-rows></div>
+        </div>
+        <p class="form-note">El stock del combo se calcula con la disponibilidad de sus componentes. No se descuenta stock al crear el combo.</p>
+        <p class="form-error" data-combo-builder-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-combo-builder-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-combo-builder-submit>Crear combo</button>
+        </div>
+    </form>
+</erp-modal>
