@@ -101,6 +101,45 @@ _schema_migrate_legacy_columns() {
         fi
         db_exec "UPDATE Sales SET order_stage = 'cancel' WHERE status = 'cancel' AND order_stage <> 'cancel';" || return 1
         db_exec "UPDATE Sales SET stock_applied = 1 WHERE status = 'finished';" || return 1
+
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'event_id';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN event_id INTEGER;" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('Sales') WHERE name = 'channel';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE Sales ADD COLUMN channel TEXT NOT NULL DEFAULT 'LOCAL' CHECK (channel IN ('LOCAL', 'FERIA', 'ECOMMERCE'));" || return 1
+        fi
+    fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'InventoryJournal';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        local journal_added_uuid=0 journal_added_synced=0
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('InventoryJournal') WHERE name = 'event_uuid';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE InventoryJournal ADD COLUMN event_uuid TEXT;" || return 1
+            journal_added_uuid=1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('InventoryJournal') WHERE name = 'origin';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE InventoryJournal ADD COLUMN origin TEXT NOT NULL DEFAULT 'LOCAL' CHECK (origin IN ('LOCAL', 'WEB', 'ECOMMERCE'));" || return 1
+        fi
+        has_column=$(db_scalar "SELECT COUNT(*) FROM pragma_table_info('InventoryJournal') WHERE name = 'synced';" 2>/dev/null || printf '0')
+        if [[ "${has_column:-0}" == "0" ]]; then
+            db_exec "ALTER TABLE InventoryJournal ADD COLUMN synced INTEGER NOT NULL DEFAULT 0 CHECK (synced IN (0, 1));" || return 1
+            journal_added_synced=1
+        fi
+        if (( journal_added_uuid == 1 )); then
+            db_exec "UPDATE InventoryJournal
+                        SET event_uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+                                        substr(hex(randomblob(2)), 2) || '-' ||
+                                        substr('89ab', (abs(random()) % 4) + 1, 1) ||
+                                        substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))
+                      WHERE event_uuid IS NULL OR event_uuid = '';" || return 1
+        fi
+        if (( journal_added_synced == 1 )); then
+            db_exec "UPDATE InventoryJournal SET synced = 1;" || return 1
+        fi
     fi
 
     table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'Users';" 2>/dev/null || printf '0')
@@ -173,6 +212,32 @@ _schema_migrate_legacy_columns() {
                                    'Pendiente', 'pendiente', 'pending');" || return 1
         db_exec "UPDATE Purchases SET stock_applied = 1 WHERE status = 'finished';" || return 1
     fi
+
+    table_exists=$(db_scalar "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'InventoryJournal';" 2>/dev/null || printf '0')
+    if [[ "${table_exists:-0}" != "0" ]]; then
+        db_exec "UPDATE InventoryJournal
+                    SET payload = (
+                        WITH RECURSIVE parts(rest, part) AS (
+                            SELECT payload || ';', ''
+                            UNION ALL
+                            SELECT substr(rest, instr(rest, ';') + 1),
+                                   substr(rest, 1, instr(rest, ';') - 1)
+                            FROM parts WHERE rest <> ''
+                        ), kv AS (
+                            SELECT CASE WHEN instr(part, '=') > 0
+                                        THEN substr(part, 1, instr(part, '=') - 1)
+                                        ELSE 'value' END AS k,
+                                   CASE WHEN instr(part, '=') > 0
+                                        THEN substr(part, instr(part, '=') + 1)
+                                        ELSE part END AS v
+                            FROM parts WHERE part <> ''
+                        )
+                        SELECT json_group_object(k, v) FROM kv
+                    )
+                  WHERE json_valid(payload) = 0
+                    AND payload IS NOT NULL
+                    AND payload <> '';" || return 1
+    fi
     return 0
 }
 
@@ -230,6 +295,40 @@ CREATE TABLE IF NOT EXISTS Products (
     is_combo INTEGER NOT NULL DEFAULT 0 CHECK (is_combo IN (0, 1))
 );
 
+CREATE TABLE IF NOT EXISTS Events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
+    location TEXT NOT NULL DEFAULT '' CHECK (length(location) <= 150),
+    start_date DATE NOT NULL,
+    end_date DATE,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed', 'cancelled')),
+    notes TEXT NOT NULL DEFAULT '' CHECK (length(notes) <= 1000),
+    created_by TEXT NOT NULL DEFAULT 'sistema',
+    closed_by TEXT,
+    total_revenue_cents INTEGER NOT NULL DEFAULT 0 CHECK (total_revenue_cents >= 0),
+    total_cogs_cents INTEGER NOT NULL DEFAULT 0 CHECK (total_cogs_cents >= 0),
+    total_loss_cents INTEGER NOT NULL DEFAULT 0 CHECK (total_loss_cents >= 0),
+    net_profit_cents INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at DATETIME,
+    CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+CREATE TABLE IF NOT EXISTS EventStock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL REFERENCES Events(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES Products(id),
+    allocated_qty INTEGER NOT NULL DEFAULT 0 CHECK (allocated_qty >= 0),
+    sold_qty INTEGER NOT NULL DEFAULT 0 CHECK (sold_qty >= 0),
+    loss_qty INTEGER NOT NULL DEFAULT 0 CHECK (loss_qty >= 0),
+    returned_qty INTEGER NOT NULL DEFAULT 0 CHECK (returned_qty >= 0),
+    unit_cost_snapshot REAL NOT NULL DEFAULT 0 CHECK (unit_cost_snapshot >= 0),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (event_id, product_id),
+    CHECK (sold_qty + loss_qty + returned_qty <= allocated_qty)
+);
+
 CREATE TABLE IF NOT EXISTS Sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -249,7 +348,9 @@ CREATE TABLE IF NOT EXISTS Sales (
     cancel_reason TEXT,
     cancelled_by TEXT,
     cancel_authorized_by TEXT,
-    cancelled_at DATETIME
+    cancelled_at DATETIME,
+    event_id INTEGER REFERENCES Events(id),
+    channel TEXT NOT NULL DEFAULT 'LOCAL' CHECK (channel IN ('LOCAL', 'FERIA', 'ECOMMERCE'))
 );
 
 CREATE TABLE IF NOT EXISTS SaleItems (
@@ -267,7 +368,10 @@ CREATE TABLE IF NOT EXISTS InventoryJournal (
     action TEXT NOT NULL,
     entity TEXT NOT NULL,
     payload TEXT,
-    status TEXT NOT NULL DEFAULT 'DONE'
+    status TEXT NOT NULL DEFAULT 'DONE',
+    event_uuid TEXT,
+    origin TEXT NOT NULL DEFAULT 'LOCAL' CHECK (origin IN ('LOCAL', 'WEB', 'ECOMMERCE')),
+    synced INTEGER NOT NULL DEFAULT 0 CHECK (synced IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS ProductionBatches (
@@ -399,6 +503,13 @@ CREATE INDEX IF NOT EXISTS idx_combo_component ON ComboItems(component_product_i
 CREATE INDEX IF NOT EXISTS idx_sales_status ON Sales(status);
 CREATE INDEX IF NOT EXISTS idx_sales_order_type_status ON Sales(order_type, status);
 CREATE INDEX IF NOT EXISTS idx_sales_order_stage ON Sales(order_stage);
+CREATE INDEX IF NOT EXISTS idx_sales_event ON Sales(event_id);
+CREATE INDEX IF NOT EXISTS idx_sales_channel ON Sales(channel);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_event_uuid ON InventoryJournal(event_uuid);
+CREATE INDEX IF NOT EXISTS idx_journal_sync ON InventoryJournal(synced, origin, id);
+CREATE INDEX IF NOT EXISTS idx_events_status_dates ON Events(status, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_eventstock_event ON EventStock(event_id);
+CREATE INDEX IF NOT EXISTS idx_eventstock_product ON EventStock(product_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_timestamp ON Purchases(timestamp);
 CREATE INDEX IF NOT EXISTS idx_purchases_status ON Purchases(status);
 CREATE INDEX IF NOT EXISTS idx_purchaseitems_purchase ON PurchaseItems(purchase_id);
@@ -448,13 +559,250 @@ DROP TRIGGER IF EXISTS trg_recipe_step_ad;
 DROP TRIGGER IF EXISTS trg_combo_ai;
 DROP TRIGGER IF EXISTS trg_combo_au;
 DROP TRIGGER IF EXISTS trg_combo_ad;
+DROP TRIGGER IF EXISTS trg_journal_event_uuid_ai;
+DROP TRIGGER IF EXISTS trg_events_status_bi;
+DROP TRIGGER IF EXISTS trg_events_immutable_bu;
+DROP TRIGGER IF EXISTS trg_events_close_bi;
+DROP TRIGGER IF EXISTS trg_events_cancel_bi;
+DROP TRIGGER IF EXISTS trg_events_delete_bi;
+DROP TRIGGER IF EXISTS trg_event_stock_allocate_ai;
+DROP TRIGGER IF EXISTS trg_event_stock_allocate_au;
+DROP TRIGGER IF EXISTS trg_event_stock_immutable_bu;
+DROP TRIGGER IF EXISTS trg_event_stock_delete_bi;
+DROP TRIGGER IF EXISTS trg_sales_event_channel_bi;
+DROP TRIGGER IF EXISTS trg_sales_event_channel_bu;
+
+CREATE TRIGGER trg_journal_event_uuid_ai AFTER INSERT ON InventoryJournal
+WHEN NEW.event_uuid IS NULL OR NEW.event_uuid = ''
+BEGIN
+    UPDATE InventoryJournal
+       SET event_uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+                              substr(hex(randomblob(2)), 2) || '-' ||
+                              substr('89ab', (abs(random()) % 4) + 1, 1) ||
+                              substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_events_status_bi BEFORE UPDATE OF status ON Events
+BEGIN
+    SELECT RAISE(ABORT, 'Transición de evento inválida')
+    WHERE NEW.status <> OLD.status AND OLD.status <> 'active';
+
+    SELECT RAISE(ABORT, 'Transición de evento inválida')
+    WHERE OLD.status = 'active' AND NEW.status NOT IN ('active', 'closed', 'cancelled');
+END;
+
+CREATE TRIGGER trg_events_immutable_bu BEFORE UPDATE ON Events
+WHEN OLD.status IN ('closed', 'cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'El evento ya está cerrado o cancelado');
+END;
+
+CREATE TRIGGER trg_events_close_bi BEFORE UPDATE OF status ON Events
+WHEN OLD.status = 'active' AND NEW.status = 'closed'
+BEGIN
+    SELECT RAISE(ABORT, 'El evento tiene pedidos pendientes')
+    WHERE EXISTS (
+        SELECT 1 FROM Sales
+        WHERE event_id = NEW.id AND status = 'pending' AND COALESCE(stock_applied, 0) = 0
+    );
+
+    SELECT RAISE(ABORT, 'El evento ya tiene devoluciones registradas')
+    WHERE EXISTS (SELECT 1 FROM EventStock WHERE event_id = NEW.id AND returned_qty <> 0);
+
+    UPDATE EventStock
+       SET returned_qty = allocated_qty - sold_qty - loss_qty,
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.id
+       AND allocated_qty - sold_qty - loss_qty >= 0;
+
+    SELECT RAISE(ABORT, 'Cantidades inconsistentes en el evento')
+    WHERE EXISTS (
+        SELECT 1 FROM EventStock
+        WHERE event_id = NEW.id
+          AND sold_qty + loss_qty + returned_qty <> allocated_qty
+    );
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
+    SELECT COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+           'EVENT_STOCK_RETURNED', 'EventStock',
+           json_object('event_id', NEW.id, 'product_id', es.product_id,
+                       'qty', es.returned_qty, 'unit_cost', es.unit_cost_snapshot,
+                       'stock_delta', es.returned_qty, 'reason', 'close'),
+           'DONE', 'LOCAL'
+    FROM EventStock es
+    WHERE es.event_id = NEW.id AND es.returned_qty > 0;
+
+    UPDATE Products
+       SET stock = stock + (
+               SELECT COALESCE(SUM(es.returned_qty), 0)
+               FROM EventStock es
+               WHERE es.event_id = NEW.id AND es.product_id = Products.id
+           )
+     WHERE id IN (
+           SELECT product_id FROM EventStock
+           WHERE event_id = NEW.id AND returned_qty > 0
+       );
+END;
+
+CREATE TRIGGER trg_events_cancel_bi BEFORE UPDATE OF status ON Events
+WHEN OLD.status = 'active' AND NEW.status = 'cancelled'
+BEGIN
+    SELECT RAISE(ABORT, 'Solo se puede cancelar un evento sin ventas ni pérdidas')
+    WHERE EXISTS (
+        SELECT 1 FROM EventStock
+        WHERE event_id = NEW.id AND (sold_qty > 0 OR loss_qty > 0)
+    );
+
+    SELECT RAISE(ABORT, 'El evento tiene pedidos pendientes')
+    WHERE EXISTS (
+        SELECT 1 FROM Sales
+        WHERE event_id = NEW.id AND status = 'pending' AND COALESCE(stock_applied, 0) = 0
+    );
+
+    SELECT RAISE(ABORT, 'El evento ya tiene devoluciones registradas')
+    WHERE EXISTS (SELECT 1 FROM EventStock WHERE event_id = NEW.id AND returned_qty <> 0);
+
+    UPDATE EventStock
+       SET returned_qty = allocated_qty,
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
+    SELECT COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+           'EVENT_STOCK_RETURNED', 'EventStock',
+           json_object('event_id', NEW.id, 'product_id', es.product_id,
+                       'qty', es.returned_qty, 'unit_cost', es.unit_cost_snapshot,
+                       'stock_delta', es.returned_qty, 'reason', 'cancel'),
+           'DONE', 'LOCAL'
+    FROM EventStock es
+    WHERE es.event_id = NEW.id AND es.returned_qty > 0;
+
+    UPDATE Products
+       SET stock = stock + (
+               SELECT COALESCE(SUM(es.returned_qty), 0)
+               FROM EventStock es
+               WHERE es.event_id = NEW.id AND es.product_id = Products.id
+           )
+     WHERE id IN (
+           SELECT product_id FROM EventStock
+           WHERE event_id = NEW.id AND returned_qty > 0
+       );
+END;
+
+CREATE TRIGGER trg_events_delete_bi BEFORE DELETE ON Events
+BEGIN
+    SELECT RAISE(ABORT, 'No se puede eliminar un evento');
+END;
+
+CREATE TRIGGER trg_event_stock_allocate_ai AFTER INSERT ON EventStock
+BEGIN
+    SELECT RAISE(ABORT, 'El evento no está activo')
+    WHERE (SELECT status FROM Events WHERE id = NEW.event_id) <> 'active';
+
+    SELECT RAISE(ABORT, 'El producto no existe o está inactivo')
+    WHERE (SELECT COALESCE(active, 0) FROM Products WHERE id = NEW.product_id) <> 1;
+
+    SELECT RAISE(ABORT, 'Solo se pueden asignar productos simples a un evento')
+    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1;
+
+    SELECT RAISE(ABORT, 'La cantidad asignada debe ser mayor a cero')
+    WHERE NEW.allocated_qty <= 0;
+
+    SELECT RAISE(ABORT, 'Stock insuficiente para asignar al evento')
+    WHERE (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id) < NEW.allocated_qty;
+
+    UPDATE Products
+       SET stock = stock - NEW.allocated_qty
+     WHERE id = NEW.product_id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'EVENT_STOCK_ALLOCATED', 'EventStock',
+            json_object('event_id', NEW.event_id, 'product_id', NEW.product_id,
+                        'qty', NEW.allocated_qty, 'unit_cost', NEW.unit_cost_snapshot,
+                        'stock_delta', -NEW.allocated_qty, 'reason', 'allocation'),
+            'DONE', 'LOCAL');
+END;
+
+CREATE TRIGGER trg_event_stock_allocate_au AFTER UPDATE OF allocated_qty ON EventStock
+WHEN NEW.allocated_qty <> OLD.allocated_qty
+BEGIN
+    SELECT RAISE(ABORT, 'No se puede reducir el stock asignado al evento')
+    WHERE NEW.allocated_qty < OLD.allocated_qty;
+
+    SELECT RAISE(ABORT, 'El evento no está activo')
+    WHERE (SELECT status FROM Events WHERE id = NEW.event_id) <> 'active';
+
+    SELECT RAISE(ABORT, 'El producto no existe o está inactivo')
+    WHERE (SELECT COALESCE(active, 0) FROM Products WHERE id = NEW.product_id) <> 1;
+
+    SELECT RAISE(ABORT, 'Stock insuficiente para ampliar el evento')
+    WHERE (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id)
+          < (NEW.allocated_qty - OLD.allocated_qty);
+
+    UPDATE Products
+       SET stock = stock - (NEW.allocated_qty - OLD.allocated_qty)
+     WHERE id = NEW.product_id;
+
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
+    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+            'EVENT_STOCK_ALLOCATED', 'EventStock',
+            json_object('event_id', NEW.event_id, 'product_id', NEW.product_id,
+                        'qty', NEW.allocated_qty - OLD.allocated_qty,
+                        'unit_cost', NEW.unit_cost_snapshot,
+                        'stock_delta', -(NEW.allocated_qty - OLD.allocated_qty),
+                        'reason', 'allocation'),
+            'DONE', 'LOCAL');
+END;
+
+CREATE TRIGGER trg_event_stock_immutable_bu BEFORE UPDATE ON EventStock
+WHEN (SELECT status FROM Events WHERE id = OLD.event_id) IN ('closed', 'cancelled')
+BEGIN
+    SELECT RAISE(ABORT, 'El stock del evento ya está cerrado');
+END;
+
+CREATE TRIGGER trg_event_stock_delete_bi BEFORE DELETE ON EventStock
+BEGIN
+    SELECT RAISE(ABORT, 'No se puede eliminar stock histórico de un evento');
+END;
+
+CREATE TRIGGER trg_sales_event_channel_bi BEFORE INSERT ON Sales
+BEGIN
+    SELECT RAISE(ABORT, 'El canal FERIA requiere un evento activo')
+    WHERE NEW.channel = 'FERIA'
+      AND (NEW.event_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM Events WHERE id = NEW.event_id AND status = 'active'
+      ));
+
+    SELECT RAISE(ABORT, 'Solo las ventas de feria pueden asociarse a un evento')
+    WHERE NEW.event_id IS NOT NULL AND NEW.channel <> 'FERIA';
+END;
+
+CREATE TRIGGER trg_sales_event_channel_bu BEFORE UPDATE OF event_id, channel ON Sales
+WHEN NEW.event_id IS NOT OLD.event_id OR NEW.channel IS NOT OLD.channel
+BEGIN
+    SELECT RAISE(ABORT, 'No se puede cambiar el canal de una venta con stock aplicado')
+    WHERE NEW.stock_applied = 1;
+
+    SELECT RAISE(ABORT, 'El canal FERIA requiere un evento activo')
+    WHERE NEW.channel = 'FERIA'
+      AND (NEW.event_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM Events WHERE id = NEW.event_id AND status = 'active'
+      ));
+
+    SELECT RAISE(ABORT, 'Solo las ventas de feria pueden asociarse a un evento')
+    WHERE NEW.event_id IS NOT NULL AND NEW.channel <> 'FERIA';
+END;
 
 CREATE TRIGGER trg_products_ai AFTER INSERT ON Products
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'INSERT', 'Products',
-            'id=' || NEW.id || ';name=' || NEW.name || ';stock=' || NEW.stock || ';price=' || NEW.price,
+            json_object('id', NEW.id, 'name', NEW.name, 'stock', NEW.stock,
+                        'stock_delta', NEW.stock, 'price', NEW.price,
+                        'cost', NEW.cost, 'active', NEW.active),
             'DONE');
 END;
 
@@ -463,7 +811,12 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'UPDATE', 'Products',
-            'id=' || NEW.id || ';name=' || NEW.name || ';stock=' || OLD.stock || '->' || NEW.stock || ';price=' || OLD.price || '->' || NEW.price,
+            json_object('id', NEW.id, 'name', NEW.name,
+                        'stock', NEW.stock, 'old_stock', OLD.stock,
+                        'stock_delta', NEW.stock - OLD.stock,
+                        'price', NEW.price, 'old_price', OLD.price,
+                        'cost', NEW.cost, 'old_cost', OLD.cost,
+                        'active', NEW.active),
             'DONE');
 END;
 
@@ -471,7 +824,10 @@ CREATE TRIGGER trg_products_ad AFTER DELETE ON Products
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'DELETE', 'Products', 'id=' || OLD.id || ';name=' || OLD.name, 'DONE');
+            'DELETE', 'Products',
+            json_object('id', OLD.id, 'name', OLD.name, 'stock', OLD.stock,
+                        'stock_delta', -OLD.stock),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_inputs_ai AFTER INSERT ON Inputs
@@ -479,7 +835,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'INSERT', 'Inputs',
-            'id=' || NEW.id || ';name=' || NEW.name || ';stock=' || NEW.stock || NEW.unit,
+            json_object('id', NEW.id, 'name', NEW.name, 'stock', NEW.stock,
+                        'stock_delta', NEW.stock, 'unit', NEW.unit,
+                        'cost', NEW.cost, 'active', NEW.active),
             'DONE');
 END;
 
@@ -488,7 +846,11 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'UPDATE', 'Inputs',
-            'id=' || NEW.id || ';name=' || NEW.name || ';stock=' || OLD.stock || '->' || NEW.stock || NEW.unit,
+            json_object('id', NEW.id, 'name', NEW.name,
+                        'stock', NEW.stock, 'old_stock', OLD.stock,
+                        'stock_delta', NEW.stock - OLD.stock,
+                        'unit', NEW.unit, 'cost', NEW.cost, 'old_cost', OLD.cost,
+                        'active', NEW.active),
             'DONE');
 END;
 
@@ -496,74 +858,101 @@ CREATE TRIGGER trg_inputs_ad AFTER DELETE ON Inputs
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'DELETE', 'Inputs', 'id=' || OLD.id || ';name=' || OLD.name, 'DONE');
+            'DELETE', 'Inputs',
+            json_object('id', OLD.id, 'name', OLD.name, 'stock', OLD.stock,
+                        'stock_delta', -OLD.stock, 'unit', OLD.unit),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_customers_ai AFTER INSERT ON Customers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'INSERT', 'Customers', 'id=' || NEW.id || ';name=' || NEW.name || ';type=' || NEW.type, 'DONE');
+            'INSERT', 'Customers',
+            json_object('id', NEW.id, 'name', NEW.name, 'type', NEW.type,
+                        'active', NEW.active),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_customers_au AFTER UPDATE ON Customers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'UPDATE', 'Customers', 'id=' || NEW.id || ';name=' || NEW.name || ';active=' || NEW.active, 'DONE');
+            'UPDATE', 'Customers',
+            json_object('id', NEW.id, 'name', NEW.name, 'type', NEW.type,
+                        'active', NEW.active),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_customers_ad AFTER DELETE ON Customers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'DELETE', 'Customers', 'id=' || OLD.id || ';name=' || OLD.name, 'DONE');
+            'DELETE', 'Customers',
+            json_object('id', OLD.id, 'name', OLD.name),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_suppliers_ai AFTER INSERT ON Suppliers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'INSERT', 'Suppliers', 'id=' || NEW.id || ';name=' || NEW.name, 'DONE');
+            'INSERT', 'Suppliers',
+            json_object('id', NEW.id, 'name', NEW.name, 'active', NEW.active),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_suppliers_au AFTER UPDATE ON Suppliers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'UPDATE', 'Suppliers', 'id=' || NEW.id || ';name=' || NEW.name || ';active=' || NEW.active, 'DONE');
+            'UPDATE', 'Suppliers',
+            json_object('id', NEW.id, 'name', NEW.name, 'active', NEW.active),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_suppliers_ad AFTER DELETE ON Suppliers
 BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'DELETE', 'Suppliers', 'id=' || OLD.id || ';name=' || OLD.name, 'DONE');
+            'DELETE', 'Suppliers',
+            json_object('id', OLD.id, 'name', OLD.name),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_sales_ai AFTER INSERT ON Sales
 BEGIN
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'SALE_CREATED', 'Sales',
-            'sale_id=' || NEW.id || ';total=' || NEW.total_amount || ';status=' || NEW.status || ';payment=' || NEW.payment_method,
-            'DONE');
+            json_object('sale_id', NEW.id, 'total', NEW.total_amount, 'status', NEW.status,
+                        'payment', NEW.payment_method, 'order_type', NEW.order_type,
+                        'order_stage', NEW.order_stage, 'event_id', NEW.event_id,
+                        'channel', NEW.channel),
+            'DONE', CASE WHEN NEW.channel = 'ECOMMERCE' THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_sales_au AFTER UPDATE OF total_amount ON Sales
 BEGIN
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'SALE_TOTAL_UPDATED', 'Sales', 'sale_id=' || NEW.id || ';total=' || OLD.total_amount || '->' || NEW.total_amount,
-            'DONE');
+            'SALE_TOTAL_UPDATED', 'Sales',
+            json_object('sale_id', NEW.id, 'old_total', OLD.total_amount,
+                        'total', NEW.total_amount, 'event_id', NEW.event_id,
+                        'channel', NEW.channel),
+            'DONE', CASE WHEN NEW.channel = 'ECOMMERCE' THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_saleitems_stock BEFORE INSERT ON SaleItems
 WHEN (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished'
 BEGIN
-    SELECT RAISE(ABORT, 'Stock insuficiente para el producto seleccionado')
-    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
-      AND (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id) < NEW.quantity;
+    SELECT RAISE(ABORT, 'El producto no existe o está inactivo')
+    WHERE NOT EXISTS (SELECT 1 FROM Products WHERE id = NEW.product_id AND active = 1);
+
+    SELECT RAISE(ABORT, 'El evento no está activo')
+    WHERE (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NOT NULL
+      AND (SELECT status FROM Events
+           WHERE id = (SELECT event_id FROM Sales WHERE id = NEW.sale_id)) <> 'active';
 
     SELECT RAISE(ABORT, 'El combo no tiene componentes activos')
     WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
@@ -573,22 +962,76 @@ BEGIN
           WHERE ci.combo_product_id = NEW.product_id AND cp.active = 1
       );
 
+    SELECT RAISE(ABORT, 'Stock insuficiente para el producto seleccionado')
+    WHERE (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NULL
+      AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+      AND (SELECT COALESCE(stock, 0) FROM Products WHERE id = NEW.product_id) < NEW.quantity;
+
     SELECT RAISE(ABORT, 'Stock insuficiente de componentes para el combo')
-    WHERE (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
+    WHERE (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NULL
+      AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
       AND EXISTS (
           SELECT 1 FROM ComboItems ci
           JOIN Products cp ON cp.id = ci.component_product_id
           WHERE ci.combo_product_id = NEW.product_id
             AND (cp.active = 0 OR cp.stock < NEW.quantity * ci.quantity)
       );
+
+    SELECT RAISE(ABORT, 'Stock insuficiente del producto en el evento')
+    WHERE (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NOT NULL
+      AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+      AND NOT EXISTS (
+          SELECT 1 FROM EventStock es
+          WHERE es.event_id = (SELECT event_id FROM Sales WHERE id = NEW.sale_id)
+            AND es.product_id = NEW.product_id
+            AND es.allocated_qty - es.sold_qty - es.loss_qty - es.returned_qty >= NEW.quantity
+      );
+
+    SELECT RAISE(ABORT, 'Stock insuficiente de componentes en el evento')
+    WHERE (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NOT NULL
+      AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 1
+      AND EXISTS (
+          SELECT 1 FROM ComboItems ci
+          JOIN Products cp ON cp.id = ci.component_product_id
+          LEFT JOIN EventStock es
+                 ON es.event_id = (SELECT event_id FROM Sales WHERE id = NEW.sale_id)
+                AND es.product_id = ci.component_product_id
+          WHERE ci.combo_product_id = NEW.product_id
+            AND (cp.active = 0 OR es.id IS NULL
+                 OR es.allocated_qty - es.sold_qty - es.loss_qty - es.returned_qty
+                    < NEW.quantity * ci.quantity)
+      );
 END;
 
 CREATE TRIGGER trg_saleitems_after_insert AFTER INSERT ON SaleItems
 BEGIN
+    UPDATE EventStock
+       SET sold_qty = sold_qty + NEW.quantity,
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = (SELECT event_id FROM Sales WHERE id = NEW.sale_id)
+       AND product_id = NEW.product_id
+       AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+       AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
+
+    UPDATE EventStock
+       SET sold_qty = sold_qty + (NEW.quantity * (
+               SELECT ci.quantity FROM ComboItems ci
+               WHERE ci.combo_product_id = NEW.product_id
+                 AND ci.component_product_id = EventStock.product_id
+           )),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = (SELECT event_id FROM Sales WHERE id = NEW.sale_id)
+       AND product_id IN (
+           SELECT component_product_id FROM ComboItems
+           WHERE combo_product_id = NEW.product_id
+       )
+       AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
+
     UPDATE Products
        SET stock = stock - NEW.quantity
      WHERE id = NEW.product_id
        AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = NEW.product_id) = 0
+       AND (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NULL
        AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
 
     UPDATE Products
@@ -601,6 +1044,7 @@ BEGIN
            SELECT component_product_id FROM ComboItems
            WHERE combo_product_id = NEW.product_id
        )
+       AND (SELECT event_id FROM Sales WHERE id = NEW.sale_id) IS NULL
        AND (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished';
 
     UPDATE Sales SET
@@ -613,21 +1057,49 @@ BEGIN
         stock_applied = CASE WHEN status = 'finished' THEN 1 ELSE stock_applied END
     WHERE id = NEW.sale_id;
 
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             CASE WHEN (SELECT status FROM Sales WHERE id = NEW.sale_id) = 'finished'
                  THEN 'SALE_STOCK_OUT' ELSE 'ORDER_ITEM_ADDED' END,
             'SaleItems',
-            'sale_id=' || NEW.sale_id || ';product_id=' || NEW.product_id || ';qty=' || NEW.quantity || ';unit_price=' || NEW.unit_price,
-            'DONE');
+            json_object('sale_id', NEW.sale_id, 'product_id', NEW.product_id,
+                        'qty', NEW.quantity, 'unit_price', NEW.unit_price,
+                        'event_id', (SELECT event_id FROM Sales WHERE id = NEW.sale_id),
+                        'channel', (SELECT channel FROM Sales WHERE id = NEW.sale_id)),
+            'DONE',
+            CASE WHEN (SELECT channel FROM Sales WHERE id = NEW.sale_id) = 'ECOMMERCE'
+                 THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_saleitems_after_delete AFTER DELETE ON SaleItems
 BEGIN
+    UPDATE EventStock
+       SET sold_qty = MAX(0, sold_qty - OLD.quantity),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = (SELECT event_id FROM Sales WHERE id = OLD.sale_id)
+       AND product_id = OLD.product_id
+       AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = OLD.product_id) = 0
+       AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
+
+    UPDATE EventStock
+       SET sold_qty = MAX(0, sold_qty - (OLD.quantity * (
+               SELECT ci.quantity FROM ComboItems ci
+               WHERE ci.combo_product_id = OLD.product_id
+                 AND ci.component_product_id = EventStock.product_id
+           ))),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = (SELECT event_id FROM Sales WHERE id = OLD.sale_id)
+       AND product_id IN (
+           SELECT component_product_id FROM ComboItems
+           WHERE combo_product_id = OLD.product_id
+       )
+       AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
+
     UPDATE Products
        SET stock = stock + OLD.quantity
      WHERE id = OLD.product_id
        AND (SELECT COALESCE(is_combo, 0) FROM Products WHERE id = OLD.product_id) = 0
+       AND (SELECT event_id FROM Sales WHERE id = OLD.sale_id) IS NULL
        AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
 
     UPDATE Products
@@ -640,6 +1112,7 @@ BEGIN
            SELECT component_product_id FROM ComboItems
            WHERE combo_product_id = OLD.product_id
        )
+       AND (SELECT event_id FROM Sales WHERE id = OLD.sale_id) IS NULL
        AND (SELECT stock_applied FROM Sales WHERE id = OLD.sale_id) = 1;
 
     UPDATE Sales SET
@@ -651,11 +1124,16 @@ BEGIN
         ) - discount_amount)
     WHERE id = OLD.sale_id;
 
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'SALE_ITEM_DELETED', 'SaleItems',
-            'sale_id=' || OLD.sale_id || ';product_id=' || OLD.product_id || ';qty=' || OLD.quantity,
-            'DONE');
+            json_object('sale_id', OLD.sale_id, 'product_id', OLD.product_id,
+                        'qty', OLD.quantity,
+                        'event_id', (SELECT event_id FROM Sales WHERE id = OLD.sale_id),
+                        'channel', (SELECT channel FROM Sales WHERE id = OLD.sale_id)),
+            'DONE',
+            CASE WHEN (SELECT channel FROM Sales WHERE id = OLD.sale_id) = 'ECOMMERCE'
+                 THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_sales_status_finish_bi BEFORE UPDATE OF status ON Sales
@@ -676,8 +1154,15 @@ BEGIN
           )
     );
 
+    SELECT RAISE(ABORT, 'El evento no está activo')
+    WHERE NEW.event_id IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM Events WHERE id = NEW.event_id AND status = 'active'
+      );
+
     SELECT RAISE(ABORT, 'Stock insuficiente para finalizar el pedido')
-    WHERE EXISTS (
+    WHERE NEW.event_id IS NULL
+      AND EXISTS (
         SELECT 1
         FROM (
             SELECT pid, SUM(needed) AS total
@@ -697,11 +1182,70 @@ BEGIN
         JOIN Products p ON p.id = needs.pid
         WHERE p.active = 0 OR p.stock < needs.total
     );
+
+    SELECT RAISE(ABORT, 'Stock insuficiente en el evento para finalizar el pedido')
+    WHERE NEW.event_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM (
+            SELECT pid, SUM(needed) AS total
+            FROM (
+                SELECT si.product_id AS pid, si.quantity AS needed
+                FROM SaleItems si
+                JOIN Products p ON p.id = si.product_id
+                WHERE si.sale_id = NEW.id AND p.is_combo = 0
+                UNION ALL
+                SELECT ci.component_product_id AS pid, si.quantity * ci.quantity AS needed
+                FROM SaleItems si
+                JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+                WHERE si.sale_id = NEW.id
+            ) parts
+            GROUP BY pid
+        ) needs
+        JOIN Products p ON p.id = needs.pid
+        LEFT JOIN EventStock es
+               ON es.event_id = NEW.event_id AND es.product_id = needs.pid
+        WHERE p.active = 0 OR es.id IS NULL
+           OR es.allocated_qty - es.sold_qty - es.loss_qty - es.returned_qty < needs.total
+    );
 END;
 
 CREATE TRIGGER trg_sales_status_finish_af AFTER UPDATE OF status ON Sales
 WHEN NEW.status = 'finished' AND OLD.status <> 'finished' AND COALESCE(NEW.stock_applied, 0) = 0
 BEGIN
+    UPDATE EventStock
+       SET sold_qty = sold_qty + (
+           SELECT COALESCE(SUM(si.quantity), 0)
+           FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+             AND si.product_id = EventStock.product_id
+       ),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.event_id
+       AND product_id IN (
+           SELECT si.product_id FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+       );
+
+    UPDATE EventStock
+       SET sold_qty = sold_qty + (
+           SELECT COALESCE(SUM(si.quantity * ci.quantity), 0)
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+             AND ci.component_product_id = EventStock.product_id
+       ),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.event_id
+       AND product_id IN (
+           SELECT ci.component_product_id
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+       );
+
     UPDATE Products
        SET stock = stock - (
            SELECT COALESCE(SUM(si.quantity), 0)
@@ -709,7 +1253,8 @@ BEGIN
            JOIN Products p ON p.id = si.product_id
            WHERE si.sale_id = NEW.id AND p.is_combo = 0 AND si.product_id = Products.id
        )
-     WHERE id IN (
+     WHERE NEW.event_id IS NULL
+       AND id IN (
            SELECT si.product_id FROM SaleItems si
            JOIN Products p ON p.id = si.product_id
            WHERE si.sale_id = NEW.id AND p.is_combo = 0
@@ -722,7 +1267,8 @@ BEGIN
            JOIN ComboItems ci ON ci.combo_product_id = si.product_id
            WHERE si.sale_id = NEW.id AND ci.component_product_id = Products.id
        )
-     WHERE id IN (
+     WHERE NEW.event_id IS NULL
+       AND id IN (
            SELECT ci.component_product_id
            FROM SaleItems si
            JOIN ComboItems ci ON ci.combo_product_id = si.product_id
@@ -731,14 +1277,51 @@ BEGIN
 
     UPDATE Sales SET stock_applied = 1 WHERE id = NEW.id;
 
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'ORDER_FINISHED', 'Sales', 'sale_id=' || NEW.id || ';total=' || NEW.total_amount, 'DONE');
+            'ORDER_FINISHED', 'Sales',
+            json_object('sale_id', NEW.id, 'total', NEW.total_amount,
+                        'event_id', NEW.event_id, 'channel', NEW.channel),
+            'DONE',
+            CASE WHEN NEW.channel = 'ECOMMERCE' THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_sales_status_unapply_af AFTER UPDATE OF status ON Sales
 WHEN NEW.status <> 'finished' AND OLD.status = 'finished' AND OLD.stock_applied = 1
 BEGIN
+    UPDATE EventStock
+       SET sold_qty = MAX(0, sold_qty - (
+           SELECT COALESCE(SUM(si.quantity), 0)
+           FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+             AND si.product_id = EventStock.product_id
+       )),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.event_id
+       AND product_id IN (
+           SELECT si.product_id FROM SaleItems si
+           JOIN Products p ON p.id = si.product_id
+           WHERE si.sale_id = NEW.id AND p.is_combo = 0
+       );
+
+    UPDATE EventStock
+       SET sold_qty = MAX(0, sold_qty - (
+           SELECT COALESCE(SUM(si.quantity * ci.quantity), 0)
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+             AND ci.component_product_id = EventStock.product_id
+       )),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE event_id = NEW.event_id
+       AND product_id IN (
+           SELECT ci.component_product_id
+           FROM SaleItems si
+           JOIN ComboItems ci ON ci.combo_product_id = si.product_id
+           WHERE si.sale_id = NEW.id
+       );
+
     UPDATE Products
        SET stock = stock + (
            SELECT COALESCE(SUM(si.quantity), 0)
@@ -746,7 +1329,8 @@ BEGIN
            JOIN Products p ON p.id = si.product_id
            WHERE si.sale_id = NEW.id AND p.is_combo = 0 AND si.product_id = Products.id
        )
-     WHERE id IN (
+     WHERE NEW.event_id IS NULL
+       AND id IN (
            SELECT si.product_id FROM SaleItems si
            JOIN Products p ON p.id = si.product_id
            WHERE si.sale_id = NEW.id AND p.is_combo = 0
@@ -759,7 +1343,8 @@ BEGIN
            JOIN ComboItems ci ON ci.combo_product_id = si.product_id
            WHERE si.sale_id = NEW.id AND ci.component_product_id = Products.id
        )
-     WHERE id IN (
+     WHERE NEW.event_id IS NULL
+       AND id IN (
            SELECT ci.component_product_id
            FROM SaleItems si
            JOIN ComboItems ci ON ci.combo_product_id = si.product_id
@@ -768,10 +1353,14 @@ BEGIN
 
     UPDATE Sales SET stock_applied = 0 WHERE id = NEW.id;
 
-    INSERT INTO InventoryJournal (user, action, entity, payload, status)
+    INSERT INTO InventoryJournal (user, action, entity, payload, status, origin)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             CASE WHEN NEW.status = 'cancel' THEN 'ORDER_CANCELLED' ELSE 'ORDER_REOPENED' END,
-            'Sales', 'sale_id=' || NEW.id || ';status=' || NEW.status, 'DONE');
+            'Sales',
+            json_object('sale_id', NEW.id, 'status', NEW.status,
+                        'event_id', NEW.event_id, 'channel', NEW.channel),
+            'DONE',
+            CASE WHEN NEW.channel = 'ECOMMERCE' THEN 'ECOMMERCE' ELSE 'LOCAL' END);
 END;
 
 CREATE TRIGGER trg_batches_after_insert AFTER INSERT ON ProductionBatches
@@ -780,7 +1369,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PRODUCTION', 'ProductionBatches',
-            'batch_id=' || NEW.id || ';product_id=' || NEW.product_id || ';qty=' || NEW.quantity || ';unit_cost=' || NEW.unit_cost,
+            json_object('batch_id', NEW.id, 'product_id', NEW.product_id,
+                        'qty', NEW.quantity, 'unit_cost', NEW.unit_cost,
+                        'stock_delta', NEW.quantity),
             'DONE');
 END;
 
@@ -796,7 +1387,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'INPUT_CONSUMPTION', 'ProductionInputs',
-            'batch_id=' || NEW.batch_id || ';input_id=' || NEW.input_id || ';qty=' || NEW.quantity,
+            json_object('batch_id', NEW.batch_id, 'input_id', NEW.input_id,
+                        'qty', NEW.quantity, 'stock_delta', -NEW.quantity),
             'DONE');
 END;
 
@@ -805,7 +1397,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PURCHASE_CREATED', 'Purchases',
-            'purchase_id=' || NEW.id || ';supplier_id=' || COALESCE(NEW.supplier_id, 0) || ';status=' || NEW.status,
+            json_object('purchase_id', NEW.id,
+                        'supplier_id', COALESCE(NEW.supplier_id, 0),
+                        'status', NEW.status, 'total', NEW.total_amount),
             'DONE');
 END;
 
@@ -814,7 +1408,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PURCHASE_UPDATED', 'Purchases',
-            'purchase_id=' || NEW.id || ';total=' || OLD.total_amount || '->' || NEW.total_amount,
+            json_object('purchase_id', NEW.id, 'total', NEW.total_amount,
+                        'old_total', OLD.total_amount, 'status', NEW.status),
             'DONE');
 END;
 
@@ -823,7 +1418,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PURCHASE_DELETED', 'Purchases',
-            'purchase_id=' || OLD.id || ';supplier_id=' || COALESCE(OLD.supplier_id, 0),
+            json_object('purchase_id', OLD.id,
+                        'supplier_id', COALESCE(OLD.supplier_id, 0)),
             'DONE');
 END;
 
@@ -855,10 +1451,15 @@ BEGIN
     UPDATE Purchases SET stock_applied = 1 WHERE id = NEW.id;
 
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
-    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'PURCHASE_FINISHED', 'Purchases',
-            'purchase_id=' || NEW.id || ';status=' || NEW.status,
-            'DONE');
+    SELECT COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+           'PURCHASE_FINISHED', 'Inputs',
+           json_object('purchase_id', NEW.id, 'input_id', pi.input_id,
+                       'qty', SUM(pi.quantity), 'stock_delta', SUM(pi.quantity),
+                       'status', NEW.status),
+           'DONE'
+    FROM PurchaseItems pi
+    WHERE pi.purchase_id = NEW.id
+    GROUP BY pi.input_id;
 END;
 
 CREATE TRIGGER trg_purchases_status_unapply_bi BEFORE UPDATE OF status ON Purchases
@@ -892,10 +1493,15 @@ BEGIN
     UPDATE Purchases SET stock_applied = 0 WHERE id = NEW.id;
 
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
-    VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
-            'PURCHASE_REOPENED', 'Purchases',
-            'purchase_id=' || NEW.id || ';status=' || NEW.status,
-            'DONE');
+    SELECT COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
+           'PURCHASE_REOPENED', 'Inputs',
+           json_object('purchase_id', NEW.id, 'input_id', pi.input_id,
+                       'qty', SUM(pi.quantity), 'stock_delta', -SUM(pi.quantity),
+                       'status', NEW.status),
+           'DONE'
+    FROM PurchaseItems pi
+    WHERE pi.purchase_id = NEW.id
+    GROUP BY pi.input_id;
 END;
 
 CREATE TRIGGER trg_purchaseitems_stock BEFORE INSERT ON PurchaseItems
@@ -924,7 +1530,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PURCHASE_ITEM_ADDED', 'PurchaseItems',
-            'purchase_id=' || NEW.purchase_id || ';input_id=' || NEW.input_id || ';qty=' || NEW.quantity || ';unit_cost=' || NEW.unit_cost,
+            json_object('purchase_id', NEW.purchase_id, 'input_id', NEW.input_id,
+                        'qty', NEW.quantity, 'unit_cost', NEW.unit_cost),
             'DONE');
 END;
 
@@ -939,7 +1546,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'PURCHASE_ITEM_DELETED', 'PurchaseItems',
-            'purchase_id=' || OLD.purchase_id || ';input_id=' || OLD.input_id || ';qty=' || OLD.quantity,
+            json_object('purchase_id', OLD.purchase_id, 'input_id', OLD.input_id,
+                        'qty', OLD.quantity, 'unit_cost', OLD.unit_cost),
             'DONE');
 END;
 
@@ -948,7 +1556,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_ADD', 'ProductRecipe',
-            'product_id=' || NEW.product_id || ';input_id=' || NEW.input_id || ';qty_per_unit=' || NEW.quantity_per_unit,
+            json_object('product_id', NEW.product_id, 'input_id', NEW.input_id,
+                        'qty_per_unit', NEW.quantity_per_unit),
             'DONE');
 END;
 
@@ -957,7 +1566,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_UPDATE', 'ProductRecipe',
-            'product_id=' || NEW.product_id || ';input_id=' || NEW.input_id || ';qty=' || OLD.quantity_per_unit || '->' || NEW.quantity_per_unit,
+            json_object('product_id', NEW.product_id, 'input_id', NEW.input_id,
+                        'qty_per_unit', NEW.quantity_per_unit,
+                        'old_qty_per_unit', OLD.quantity_per_unit),
             'DONE');
 END;
 
@@ -966,7 +1577,7 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_REMOVE', 'ProductRecipe',
-            'product_id=' || OLD.product_id || ';input_id=' || OLD.input_id,
+            json_object('product_id', OLD.product_id, 'input_id', OLD.input_id),
             'DONE');
 END;
 
@@ -975,7 +1586,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_STEP_ADD', 'ProductRecipeStep',
-            'product_id=' || NEW.product_id || ';step=' || NEW.step_number, 'DONE');
+            json_object('product_id', NEW.product_id, 'step', NEW.step_number),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_recipe_step_au AFTER UPDATE ON ProductRecipeStep
@@ -983,7 +1595,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_STEP_UPDATE', 'ProductRecipeStep',
-            'product_id=' || NEW.product_id || ';step=' || NEW.step_number, 'DONE');
+            json_object('product_id', NEW.product_id, 'step', NEW.step_number),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_recipe_step_ad AFTER DELETE ON ProductRecipeStep
@@ -991,7 +1604,8 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'RECIPE_STEP_REMOVE', 'ProductRecipeStep',
-            'product_id=' || OLD.product_id || ';step=' || OLD.step_number, 'DONE');
+            json_object('product_id', OLD.product_id, 'step', OLD.step_number),
+            'DONE');
 END;
 
 CREATE TRIGGER trg_combo_ai AFTER INSERT ON ComboItems
@@ -999,7 +1613,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'COMBO_ADD', 'ComboItems',
-            'combo_id=' || NEW.combo_product_id || ';component_id=' || NEW.component_product_id || ';qty=' || NEW.quantity,
+            json_object('combo_id', NEW.combo_product_id,
+                        'component_id', NEW.component_product_id,
+                        'qty', NEW.quantity),
             'DONE');
 END;
 
@@ -1008,7 +1624,9 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'COMBO_UPDATE', 'ComboItems',
-            'combo_id=' || NEW.combo_product_id || ';component_id=' || NEW.component_product_id || ';qty=' || OLD.quantity || '->' || NEW.quantity,
+            json_object('combo_id', NEW.combo_product_id,
+                        'component_id', NEW.component_product_id,
+                        'qty', NEW.quantity, 'old_qty', OLD.quantity),
             'DONE');
 END;
 
@@ -1017,12 +1635,21 @@ BEGIN
     INSERT INTO InventoryJournal (user, action, entity, payload, status)
     VALUES (COALESCE((SELECT value FROM AppContext WHERE key = 'user'), 'sistema'),
             'COMBO_REMOVE', 'ComboItems',
-            'combo_id=' || OLD.combo_product_id || ';component_id=' || OLD.component_product_id,
+            json_object('combo_id', OLD.combo_product_id,
+                        'component_id', OLD.component_product_id),
             'DONE');
 END;
 SQL
 )
-    db_exec "${sql}"
+    db_exec "${sql}" || return 1
+
+    db_exec "UPDATE InventoryJournal
+                SET event_uuid = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+                                substr(hex(randomblob(2)), 2) || '-' ||
+                                substr('89ab', (abs(random()) % 4) + 1, 1) ||
+                                substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))),
+                    synced = 1
+              WHERE event_uuid IS NULL OR event_uuid = '';" || return 1
 }
 
 _schema_hash_password() {

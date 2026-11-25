@@ -584,3 +584,94 @@ analytics_dashboard_json() {
         "${products}" "${customers}" "${suppliers}" "${categories_options}" "${inputs}" \
         "${recent_sales}" "${journal}"
 }
+
+analytics_events_summary_json() {
+    local total active closed cancelled
+    total=$(db_scalar "SELECT COUNT(*) FROM Events;" 2>/dev/null || printf '0')
+    active=$(db_scalar "SELECT COUNT(*) FROM Events WHERE status = 'active';" 2>/dev/null || printf '0')
+    closed=$(db_scalar "SELECT COUNT(*) FROM Events WHERE status = 'closed';" 2>/dev/null || printf '0')
+    cancelled=$(db_scalar "SELECT COUNT(*) FROM Events WHERE status = 'cancelled';" 2>/dev/null || printf '0')
+
+    local -a profits=() units=()
+    local rows row id net sold
+    rows=$(db_query "SELECT e.id, e.net_profit_cents, COALESCE(SUM(es.sold_qty), 0)
+                     FROM Events e
+                     LEFT JOIN EventStock es ON es.event_id = e.id
+                     WHERE e.status = 'closed'
+                     GROUP BY e.id
+                     ORDER BY e.id;")
+    while IFS='|' read -r id net sold; do
+        [[ -z "${id}" ]] && continue
+        profits+=("$(billing_cents_to_decimal "${net}")")
+        units+=("${sold}")
+    done <<< "${rows}"
+
+    local totals revenue_cents cogs_cents loss_cents net_cents
+    totals=$(db_query "SELECT
+        COALESCE(SUM(total_revenue_cents), 0), COALESCE(SUM(total_cogs_cents), 0),
+        COALESCE(SUM(total_loss_cents), 0), COALESCE(SUM(net_profit_cents), 0)
+        FROM Events WHERE status = 'closed';")
+    IFS='|' read -r revenue_cents cogs_cents loss_cents net_cents <<< "${totals}"
+
+    local allocated sold_units loss_units returned_units
+    allocated=$(db_scalar "SELECT COALESCE(SUM(es.allocated_qty), 0)
+                           FROM EventStock es JOIN Events e ON e.id = es.event_id
+                           WHERE e.status = 'closed';" 2>/dev/null || printf '0')
+    sold_units=$(db_scalar "SELECT COALESCE(SUM(es.sold_qty), 0)
+                            FROM EventStock es JOIN Events e ON e.id = es.event_id
+                            WHERE e.status = 'closed';" 2>/dev/null || printf '0')
+    loss_units=$(db_scalar "SELECT COALESCE(SUM(es.loss_qty), 0)
+                            FROM EventStock es JOIN Events e ON e.id = es.event_id
+                            WHERE e.status = 'closed';" 2>/dev/null || printf '0')
+    returned_units=$(db_scalar "SELECT COALESCE(SUM(es.returned_qty), 0)
+                                FROM EventStock es JOIN Events e ON e.id = es.event_id
+                                WHERE e.status = 'closed';" 2>/dev/null || printf '0')
+
+    local conversion=0 loss_rate=0 net_margin=0 revenue_decimal net_decimal
+    revenue_decimal=$(billing_cents_to_decimal "${revenue_cents}")
+    net_decimal=$(billing_cents_to_decimal "${net_cents}")
+    if [[ "${allocated}" =~ ^[0-9]+$ ]] && (( allocated > 0 )); then
+        conversion=$(awk -v s="${sold_units}" -v a="${allocated}" 'BEGIN { printf "%.2f", (s / a) * 100 }')
+        loss_rate=$(awk -v l="${loss_units}" -v a="${allocated}" 'BEGIN { printf "%.2f", (l / a) * 100 }')
+    fi
+    if awk -v r="${revenue_decimal}" 'BEGIN { exit !(r > 0) }'; then
+        net_margin=$(awk -v n="${net_decimal}" -v r="${revenue_decimal}" 'BEGIN { printf "%.2f", (n / r) * 100 }')
+    fi
+
+    local channels_out="" channel_rows channel count amount label
+    channel_rows=$(db_query "SELECT CASE WHEN channel = 'LOCAL' THEN 'SEDE' ELSE channel END,
+                                    COUNT(*), printf('%.2f', COALESCE(SUM(total_amount), 0))
+                             FROM Sales
+                             WHERE status = 'finished'
+                               AND (order_type = 'direct' OR order_stage IN ('paid', 'delivered'))
+                             GROUP BY CASE WHEN channel = 'LOCAL' THEN 'SEDE' ELSE channel END;")
+    local sede="0" feria="0" ecommerce="0"
+    local sede_sales="0" feria_sales="0" ecommerce_sales="0"
+    while IFS='|' read -r channel count amount; do
+        [[ -z "${channel}" ]] && continue
+        case "${channel}" in
+            SEDE) sede="${amount}"; sede_sales="${count}" ;;
+            FERIA) feria="${amount}"; feria_sales="${count}" ;;
+            ECOMMERCE) ecommerce="${amount}"; ecommerce_sales="${count}" ;;
+        esac
+    done <<< "${channel_rows}"
+    channels_out=$(printf '{"channel":"SEDE","sales":%s,"revenue":%s},{"channel":"FERIA","sales":%s,"revenue":%s},{"channel":"ECOMMERCE","sales":%s,"revenue":%s}' \
+        "$(json_number "${sede_sales}")" "$(json_number "${sede}")" \
+        "$(json_number "${feria_sales}")" "$(json_number "${feria}")" \
+        "$(json_number "${ecommerce_sales}")" "$(json_number "${ecommerce}")")
+
+    local profit_block units_block
+    profit_block=$(_api_events_stat_block "net_profit" "${profits[@]}")
+    units_block=$(_api_events_stat_block "units_sold" "${units[@]}")
+
+    printf '{"events":{"total":%s,"active":%s,"closed":%s,"cancelled":%s},"financials":{"revenue":%s,"cogs":%s,"loss":%s,"net_profit":%s,"net_margin":%s},"units":{"allocated":%s,"sold":%s,"lost":%s,"returned":%s,"conversion":%s,"loss_rate":%s},%s,%s,"channels":[%s]}' \
+        "${total}" "${active}" "${closed}" "${cancelled}" \
+        "$(json_number "${revenue_decimal}")" \
+        "$(json_number "$(billing_cents_to_decimal "${cogs_cents}")")" \
+        "$(json_number "$(billing_cents_to_decimal "${loss_cents}")")" \
+        "$(json_number "${net_decimal}")" "$(json_number "${net_margin}")" \
+        "$(json_number "${allocated}")" "$(json_number "${sold_units}")" \
+        "$(json_number "${loss_units}")" "$(json_number "${returned_units}")" \
+        "$(json_number "${conversion}")" "$(json_number "${loss_rate}")" \
+        "${profit_block}" "${units_block}" "${channels_out}"
+}

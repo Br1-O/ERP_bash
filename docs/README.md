@@ -2,16 +2,16 @@
 
 Documentación vigente del ERP offline-first **Aurea Destilería Artesanal**.
 La fuente de verdad del esquema es `model/schema.sh` y la versión actual es
-**7**.
+**8**.
 
 | Documento | Contenido |
 |---|---|
 | [ARQUITECTURA.md](ARQUITECTURA.md) | Capas, módulos, flujo de una petición, frontend, seguridad y pruebas. |
 | [RUTAS.md](RUTAS.md) | Rutas web, enlaces profundos, API HTTP, payloads y códigos de estado. |
-| [BASE_DE_DATOS.md](BASE_DE_DATOS.md) | Tablas, columnas, relaciones, índices, triggers, invariantes y migración v7. |
+| [BASE_DE_DATOS.md](BASE_DE_DATOS.md) | Tablas, columnas, relaciones, índices, triggers, invariantes y migración v8. |
 | [DIAGRAMAS.md](DIAGRAMAS.md) | Diagramas Mermaid de clases/módulos, ER de base de datos, estados y secuencias. |
-| [SINCRONIZACION.md](SINCRONIZACION.md) | Contrato del snapshot y sincronización con PostgreSQL. |
-| [SYNC_POSTGRES.sql](SYNC_POSTGRES.sql) | DDL y función de referencia para el endpoint PostgreSQL. |
+| [SINCRONIZACION.md](SINCRONIZACION.md) | Contrato híbrido de eventos, pull e-commerce y snapshot con PostgreSQL. |
+| [SYNC_POSTGRES.sql](SYNC_POSTGRES.sql) | DDL y funciones de referencia (`apply_events`, `pull_events`, `sync_snapshot`) para el endpoint PostgreSQL. |
 | [ESTADISTICA.md](ESTADISTICA.md) | Criterios de las métricas y análisis estadísticos del dashboard. |
 
 ## Convenciones

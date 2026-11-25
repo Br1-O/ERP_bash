@@ -398,6 +398,17 @@ EOF
                                     <select id="sale-customer"></select>
                                 </label>
                                 <label class="field">
+                                    <span>Canal de venta</span>
+                                    <select id="sale-channel">
+                                        <option value="LOCAL">Tienda local</option>
+                                        <option value="FERIA">Feria / evento</option>
+                                    </select>
+                                </label>
+                                <label class="field" id="sale-event-field" hidden>
+                                    <span>Evento</span>
+                                    <select id="sale-event"></select>
+                                </label>
+                                <label class="field">
                                     <span>Método de pago</span>
                                     <select id="sale-payment">
                                         <option value="Efectivo">Efectivo</option>

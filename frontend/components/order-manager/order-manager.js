@@ -11,6 +11,11 @@
             this._started = false;
             this._customers = [];
             this._products = [];
+            this._events = [];
+            this._saleEventProducts = [];
+            this._orderEventProducts = [];
+            this._saleEventId = 0;
+            this._orderEventId = 0;
             this._page = 1;
             this._pages = 1;
             this._editing = 0;
@@ -37,6 +42,10 @@
             this._form = this.querySelector('[data-order-form]');
             this._formError = this.querySelector('[data-order-error]');
             this._customerSelect = this.querySelector('[data-order-customer]');
+            this._orderChannel = this.querySelector('[data-order-channel]');
+            this._orderChannelField = this.querySelector('[data-order-channel-field]');
+            this._orderEventField = this.querySelector('[data-order-event-field]');
+            this._orderEvent = this.querySelector('[data-order-event]');
             this._customerName = this.querySelector('[data-order-customer-name]');
             this._customerType = this.querySelector('[data-order-customer-type]');
             this._customerPhone = this.querySelector('[data-order-customer-phone]');
@@ -54,6 +63,9 @@
             this._saleModal = this.querySelector('#sale-form-modal');
             this._saleForm = this.querySelector('[data-sale-form]');
             this._saleCustomer = this.querySelector('[data-sale-customer]');
+            this._saleChannel = this.querySelector('[data-sale-channel]');
+            this._saleEventField = this.querySelector('[data-sale-event-field]');
+            this._saleEvent = this.querySelector('[data-sale-event]');
             this._salePayment = this.querySelector('[data-sale-payment]');
             this._saleDiscountType = this.querySelector('[data-sale-discount-type]');
             this._saleDiscountValue = this.querySelector('[data-sale-discount-value]');
@@ -83,6 +95,10 @@
         _bind() {
             this.querySelector('[data-create-sale]').addEventListener('click', () => this._openSaleForm());
             this.querySelector('[data-create-order]').addEventListener('click', () => this._openForm());
+            this._saleChannel.addEventListener('change', () => this._syncSaleChannel());
+            this._saleEvent.addEventListener('change', () => this._saleEventChanged());
+            this._orderChannel.addEventListener('change', () => this._syncOrderChannel());
+            this._orderEvent.addEventListener('change', () => this._orderEventChanged());
             this._saleForm.addEventListener('submit', (event) => this._submitSale(event));
             this.querySelector('[data-sale-add-item]').addEventListener('click', () => {
                 this._addSaleItemRow();
@@ -151,12 +167,14 @@
 
         async _loadCatalog() {
             try {
-                const [contacts, products] = await Promise.all([
+                const [contacts, products, eventsPayload] = await Promise.all([
                     ErpUI.api('/api/contacts'),
-                    ErpUI.api('/api/products')
+                    ErpUI.api('/api/products'),
+                    ErpUI.api('/api/events/active').catch(() => ({ items: [] }))
                 ]);
                 this._customers = contacts.customers || [];
                 this._products = (products || []).filter((product) => Number(product.active) === 1);
+                this._events = eventsPayload.items || [];
                 this._customerSelect.innerHTML = '<option value="0">Nuevo cliente / Consumidor final</option>' +
                     this._customers.map((customer) =>
                         `<option value="${Number(customer.id)}">${escape(customer.name)}</option>`).join('');
@@ -167,12 +185,150 @@
 
         _productOptions(selectedId = 0) {
             return '<option value="0">Seleccione un producto…</option>' +
-                this._products.map((product) =>
-                    `<option value="${Number(product.id)}" ${Number(product.id) === Number(selectedId) ? 'selected' : ''}>${escape(product.name)}${Number(product.is_combo) === 1 ? ' (combo)' : ''}</option>`).join('');
+                this._orderAvailableProducts().map((product) =>
+                    `<option value="${Number(product.id)}" ${Number(product.id) === Number(selectedId) ? 'selected' : ''}>${escape(product.name)}${Number(product.is_combo) === 1 ? ' (combo)' : ''} · ${number(product.stock, 0)} u.</option>`).join('');
+        }
+
+        _findOrderProduct(productId) {
+            return this._orderAvailableProducts().find((product) => Number(product.id) === Number(productId))
+                || this._findProduct(productId);
         }
 
         _findProduct(productId) {
             return this._products.find((product) => Number(product.id) === Number(productId));
+        }
+
+        _eventOptions(selectedId = 0) {
+            if (!this._events.length) {
+                return '<option value="0">No hay eventos activos</option>';
+            }
+            return '<option value="0">Seleccione un evento…</option>' + this._events.map((event) =>
+                `<option value="${Number(event.id)}" ${Number(event.id) === Number(selectedId) ? 'selected' : ''}>${escape(event.name)} · ${escape(event.location || 'Sin ubicación')}</option>`).join('');
+        }
+
+        _syncSaleChannel() {
+            const fair = this._saleChannel.value === 'FERIA';
+            this._saleEventField.hidden = !fair;
+            if (!fair) {
+                this._saleEventId = 0;
+                this._saleEventProducts = [];
+                this._saleEvent.value = '0';
+                this._refreshSaleRows();
+                return;
+            }
+            this._saleEvent.innerHTML = this._eventOptions(this._saleEventId);
+            if (!this._events.length) {
+                ErpUI.toast('Sin eventos activos', 'Cree un evento para registrar ventas de feria.', 'error');
+                this._saleChannel.value = 'LOCAL';
+                this._saleEventField.hidden = true;
+                this._saleEventId = 0;
+                this._refreshSaleRows();
+                return;
+            }
+            if (!this._saleEventId && this._events.length === 1) {
+                this._saleEventId = Number(this._events[0].id);
+                this._saleEvent.value = String(this._saleEventId);
+            }
+            this._saleEventChanged();
+        }
+
+        async _saleEventChanged() {
+            const eventId = Number(this._saleEvent.value) || 0;
+            this._saleEventId = eventId;
+            if (!eventId) {
+                this._saleEventProducts = [];
+                this._refreshSaleRows();
+                return;
+            }
+            try {
+                const event = await ErpUI.api(`/api/events/${eventId}`);
+                this._saleEventProducts = (event.products || []).map((product) => ({
+                    ...product,
+                    stock: Number(product.available) || 0
+                }));
+                this._refreshSaleRows();
+            } catch (error) {
+                this._saleEventProducts = [];
+                this._refreshSaleRows();
+                ErpUI.toast('No se pudo cargar el evento', error.message, 'error');
+            }
+        }
+
+        _saleAvailableProducts() {
+            if (this._saleEventId > 0) {
+                return this._saleEventProducts.filter((product) => Number(product.stock) > 0);
+            }
+            return this._products.filter((product) =>
+                Number(product.active) === 1 && Number(product.stock) > 0);
+        }
+
+        _refreshSaleRows() {
+            this._saleItems.innerHTML = '';
+            this._addSaleItemRow();
+            this._renderSaleTotals();
+        }
+
+        _syncOrderChannel() {
+            const fair = this._orderChannel.value === 'FERIA';
+            this._orderEventField.hidden = !fair;
+            if (!fair) {
+                this._orderEventId = 0;
+                this._orderEventProducts = [];
+                this._orderEvent.value = '0';
+                this._refreshOrderRows();
+                return;
+            }
+            this._orderEvent.innerHTML = this._eventOptions(this._orderEventId);
+            if (!this._events.length) {
+                ErpUI.toast('Sin eventos activos', 'Cree un evento para registrar pedidos de feria.', 'error');
+                this._orderChannel.value = 'LOCAL';
+                this._orderEventField.hidden = true;
+                this._orderEventId = 0;
+                return;
+            }
+            if (!this._orderEventId && this._events.length === 1) {
+                this._orderEventId = Number(this._events[0].id);
+                this._orderEvent.value = String(this._orderEventId);
+            }
+            this._orderEventChanged();
+        }
+
+        async _orderEventChanged() {
+            const eventId = Number(this._orderEvent.value) || 0;
+            this._orderEventId = eventId;
+            if (!eventId) {
+                this._orderEventProducts = [];
+                this._refreshOrderRows();
+                return;
+            }
+            try {
+                const event = await ErpUI.api(`/api/events/${eventId}`);
+                this._orderEventProducts = (event.products || []).map((product) => ({
+                    ...product,
+                    stock: Number(product.available) || 0
+                }));
+            } catch (error) {
+                this._orderEventProducts = [];
+                ErpUI.toast('No se pudo cargar el evento', error.message, 'error');
+            }
+            this._refreshOrderRows();
+        }
+
+        _refreshOrderRows() {
+            const rows = Array.from(this._items.querySelectorAll('.order-item-row')).map((row) => ({
+                product_id: Number(row.querySelector('[data-order-item-product]').value) || 0,
+                quantity: Number(row.querySelector('[data-order-item-quantity]').value) || 1,
+                unit_price: row.querySelector('[data-order-item-price]').value
+            }));
+            if (!rows.length) return;
+            this._items.innerHTML = '';
+            rows.forEach((item) => this._addItemRow(item));
+            this._renderTotals();
+        }
+
+        _orderAvailableProducts() {
+            if (this._orderEventId > 0) return this._orderEventProducts;
+            return this._products.filter((product) => Number(product.active) === 1);
         }
 
         _addItemRow(item = {}) {
@@ -192,7 +348,7 @@
 
         _productChanged(row) {
             if (!row) return;
-            const product = this._findProduct(row.querySelector('[data-order-item-product]').value);
+            const product = this._findOrderProduct(row.querySelector('[data-order-item-product]').value);
             if (product) {
                 row.querySelector('[data-order-item-price]').value = Number(product.price || 0).toFixed(2);
             }
@@ -200,16 +356,17 @@
         }
 
         _updateStockNote(row) {
-            const product = this._findProduct(row.querySelector('[data-order-item-product]').value);
+            const product = this._findOrderProduct(row.querySelector('[data-order-item-product]').value);
             const note = row.querySelector('[data-order-item-stock]');
             if (!product) {
                 note.textContent = '';
                 return;
             }
+            const scope = this._orderEventId > 0 ? 'Disponible en el evento' : 'Stock disponible';
             if (Number(product.is_combo) === 1) {
                 note.textContent = `Combo: disponibilidad calculada desde sus componentes (${number(product.stock, 0)}).`;
             } else {
-                note.textContent = `Stock disponible: ${number(product.stock, 0)} unidades.`;
+                note.textContent = `${scope}: ${number(product.stock, 0)} unidades.`;
             }
         }
 
@@ -223,8 +380,7 @@
         }
 
         _saleProductOptions(selectedId = 0) {
-            const available = (this._products || []).filter((product) =>
-                Number(product.active) === 1 && Number(product.stock) > 0);
+            const available = this._saleAvailableProducts();
             return '<option value="0">Seleccione un producto…</option>' + available.map((product) => {
                 const selected = Number(product.id) === Number(selectedId) ? ' selected' : '';
                 return `<option value="${Number(product.id)}" data-price="${Number(product.price) || 0}" data-stock="${Number(product.stock) || 0}"${selected}>${escape(product.name)}${Number(product.is_combo) === 1 ? ' (combo)' : ''} · ${money(product.price)} · ${number(product.stock)} u.</option>`;
@@ -232,10 +388,9 @@
         }
 
         _addSaleItemRow(productId = 0) {
-            const available = (this._products || []).filter((product) =>
-                Number(product.active) === 1 && Number(product.stock) > 0);
+            const available = this._saleAvailableProducts();
             if (!available.length) {
-                ErpUI.toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
+                ErpUI.toast('Sin stock', this._saleEventId > 0 ? 'El evento no tiene stock disponible para vender.' : 'No hay productos disponibles para vender.', 'error');
                 return;
             }
             const selectedId = Number(productId) || Number(available[0].id);
@@ -338,16 +493,26 @@
                 : '—';
         }
 
-        _openSaleForm() {
-            if (!(this._products || []).some((product) =>
-                Number(product.active) === 1 && Number(product.stock) > 0)) {
-                ErpUI.toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
-                return;
+        async _refreshActiveEvents() {
+            try {
+                const payload = await ErpUI.api('/api/events/active');
+                this._events = payload.items || [];
+            } catch (error) {
+                this._events = [];
             }
+        }
+
+        async _openSaleForm() {
+            await this._refreshActiveEvents();
             this._saleForm.reset();
             this._saleCustomer.innerHTML = '<option value="0">Consumidor final</option>' +
                 (this._customers || []).map((customer) =>
                     `<option value="${Number(customer.id)}">${escape(customer.name)} · ${escape(customer.type)}</option>`).join('');
+            this._saleChannel.value = 'LOCAL';
+            this._saleEvent.innerHTML = this._eventOptions();
+            this._saleEventField.hidden = true;
+            this._saleEventId = 0;
+            this._saleEventProducts = [];
             this._salePayment.value = 'Efectivo';
             this._saleDiscountType.value = 'none';
             this._saleDiscountValue.value = '0';
@@ -360,6 +525,10 @@
             this._syncSaleDiscount();
             this._addSaleItemRow();
             this._renderSaleTotals();
+            if (!this._saleAvailableProducts().length) {
+                this._saleError.textContent = 'No hay productos con stock disponible para vender.';
+                this._saleError.hidden = false;
+            }
             this._saleModal.open();
             this._saleCustomer.focus();
         }
@@ -376,6 +545,11 @@
             this._saleError.hidden = true;
             if (!items.length) {
                 this._saleError.textContent = 'Agregue al menos un producto con cantidad válida.';
+                this._saleError.hidden = false;
+                return;
+            }
+            if (this._saleChannel.value === 'FERIA' && !this._saleEventId) {
+                this._saleError.textContent = 'Seleccione un evento activo para la venta de feria.';
                 this._saleError.hidden = false;
                 return;
             }
@@ -397,6 +571,7 @@
                         payment_method: this._salePayment.value || 'Efectivo',
                         discount_type: totals.type,
                         discount_value: totals.type === 'none' ? '0' : totals.rawValue,
+                        event_id: this._saleChannel.value === 'FERIA' ? this._saleEventId : 0,
                         items
                     }
                 });
@@ -417,7 +592,7 @@
             return Array.from(this._items.querySelectorAll('.order-item-row'))
                 .map((row) => {
                     const productId = Number(row.querySelector('[data-order-item-product]').value) || 0;
-                    const product = this._findProduct(productId);
+                    const product = this._findOrderProduct(productId);
                     const quantity = Number(row.querySelector('[data-order-item-quantity]').value) || 0;
                     const rawPrice = row.querySelector('[data-order-item-price]').value;
                     const unitPrice = rawPrice === '' ? Number(product?.price || 0) : Number(rawPrice);
@@ -441,11 +616,18 @@
                 <span class="grand">Total <b>${money(total)}</b></span>`;
         }
 
-        _openForm(order = null) {
+        async _openForm(order = null) {
+            if (!order) await this._refreshActiveEvents();
             this._editing = order ? Number(order.id) : 0;
             this._form.reset();
             this._formError.hidden = true;
             this._items.innerHTML = '';
+            this._orderChannelField.hidden = Boolean(order);
+            this._orderEventField.hidden = true;
+            this._orderChannel.value = 'LOCAL';
+            this._orderEventId = 0;
+            this._orderEventProducts = [];
+            this._orderEvent.innerHTML = this._eventOptions();
             this._saveCustomerField.hidden = Boolean(order);
             this._customerName.disabled = Boolean(order);
             this._customerType.disabled = Boolean(order);
@@ -502,6 +684,11 @@
                 this._formError.hidden = false;
                 return;
             }
+            if (!this._editing && this._orderChannel.value === 'FERIA' && !this._orderEventId) {
+                this._formError.textContent = 'Seleccione un evento activo para el pedido de feria.';
+                this._formError.hidden = false;
+                return;
+            }
 
             const submit = this.querySelector('[data-order-submit]');
             submit.disabled = true;
@@ -518,6 +705,7 @@
                 discount_value: Number(this._discountValue.value) || 0,
                 status: this._state.value,
                 save_customer: this._saveCustomer.checked ? 1 : 0,
+                event_id: !this._editing && this._orderChannel.value === 'FERIA' ? this._orderEventId : 0,
                 items
             };
             try {
@@ -611,10 +799,14 @@
             this._body.innerHTML = items.map((order) => {
                 const typeLabel = this._typeLabel(order.order_type);
                 const typeClass = order.order_type === 'direct' ? 'badge-accent' : 'badge-soft';
+                const channelLabel = order.channel === 'FERIA'
+                    ? `Feria${order.event_name ? ` · ${escape(order.event_name)}` : ''}`
+                    : 'Local';
                 return `
                 <tr class="order-row" data-order-id="${Number(order.id)}">
                     <td>#${Number(order.id)}</td>
-                    <td><span class="badge ${typeClass}">${typeLabel}</span></td>
+                    <td><span class="badge ${typeClass}">${typeLabel}</span>
+                        <small class="order-stock-note">${channelLabel}</small></td>
                     <td>${escape(ErpUI.formatDateTime(order.date))}</td>
                     <td>${escape(order.customer)}</td>
                     <td>${number(order.items, 0)}</td>
@@ -675,6 +867,7 @@
                     <div class="inline-actions">
                         <span class="badge ${isOrder ? 'badge-soft' : 'badge-accent'}">${typeLabel}</span>
                         <span class="order-status-pill ${escape(order.status)}">${this._statusLabel(order.status)}</span>
+                        <span class="badge ${order.channel === 'FERIA' ? 'badge-accent' : 'badge-soft'}">${order.channel === 'FERIA' ? `Feria${order.event_name ? ` · ${escape(order.event_name)}` : ''}` : 'Local'}</span>
                         <span class="badge badge-soft">${escape(this._stockLabel(order))}</span>
                         <span class="badge badge-soft">${escape(ErpUI.formatDateTime(order.date))}</span>
                     </div>

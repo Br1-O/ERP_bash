@@ -1,0 +1,182 @@
+<section class="manager event-manager">
+    <div class="event-kpis" data-event-kpis>
+        <article class="card event-kpi">
+            <span class="eyebrow">Eventos activos</span>
+            <strong data-event-kpi-active>0</strong>
+            <small class="muted" data-event-kpi-total>0 eventos registrados</small>
+        </article>
+        <article class="card event-kpi">
+            <span class="eyebrow">Ingresos cerrados</span>
+            <strong data-event-kpi-revenue>$0.00</strong>
+            <small class="muted">Ventas consolidadas de eventos finalizados</small>
+        </article>
+        <article class="card event-kpi">
+            <span class="eyebrow">Resultado neto</span>
+            <strong data-event-kpi-profit>$0.00</strong>
+            <small class="muted" data-event-kpi-loss>Pérdidas: $0.00</small>
+        </article>
+        <article class="card event-kpi">
+            <span class="eyebrow">Conversión de stock</span>
+            <strong data-event-kpi-conversion>0%</strong>
+            <small class="muted" data-event-kpi-sold>0 unidades vendidas</small>
+        </article>
+    </div>
+
+    <div class="manager-toolbar card">
+        <div class="manager-filters">
+            <label class="search-field">
+                <span>Buscar evento</span>
+                <input type="search" data-event-search placeholder="Nombre, ubicación o notas…">
+            </label>
+            <label class="field compact-field">
+                <span>Estado</span>
+                <select data-event-status-filter>
+                    <option value="all">Todos</option>
+                    <option value="active">Activos</option>
+                    <option value="closed">Cerrados</option>
+                    <option value="cancelled">Cancelados</option>
+                </select>
+            </label>
+            <label class="field compact-field">
+                <span>Desde</span>
+                <input type="date" data-event-date-from>
+            </label>
+            <label class="field compact-field">
+                <span>Hasta</span>
+                <input type="date" data-event-date-to>
+            </label>
+        </div>
+        <div class="inline-actions">
+            <button class="btn primary" type="button" data-event-create hidden>+ Nuevo evento</button>
+        </div>
+    </div>
+
+    <article class="card manager-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Operaciones de feria</span>
+                <h3>Eventos registrados</h3>
+            </div>
+            <span class="badge badge-soft" data-event-count>0 eventos</span>
+        </header>
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Evento</th>
+                        <th>Fechas</th>
+                        <th>Estado</th>
+                        <th>Stock</th>
+                        <th>Vendido</th>
+                        <th>Ingresos</th>
+                        <th>Resultado</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody data-event-body></tbody>
+            </table>
+        </div>
+        <div class="empty-state" data-event-empty hidden>
+            <strong>No hay eventos para mostrar</strong>
+            <span>Ajuste los filtros o cree un evento nuevo.</span>
+        </div>
+        <erp-pagination data-event-pagination></erp-pagination>
+    </article>
+
+    <article class="card event-stats-card">
+        <header class="card-header">
+            <div>
+                <span class="eyebrow">Analítica de eventos</span>
+                <h3>Rendimiento de eventos cerrados</h3>
+            </div>
+            <span class="badge badge-soft" data-event-closed-badge>0 cerrados</span>
+        </header>
+        <div class="event-stat-layout">
+            <div class="event-channel-chart" data-event-channels></div>
+            <div class="event-stat-grid" data-event-stats></div>
+        </div>
+        <div class="event-chart-grid">
+            <div class="event-profit-chart" data-event-profit-chart></div>
+            <div class="event-distribution-chart" data-event-distribution-chart></div>
+        </div>
+    </article>
+</section>
+
+<erp-modal id="event-detail-modal" title="Detalle del evento" size="wide"></erp-modal>
+
+<erp-modal id="event-form-modal" title="Nuevo evento" size="wide">
+    <form class="form-stack" data-event-form>
+        <div class="form-grid">
+            <label class="field span-2">
+                <span>Nombre del evento</span>
+                <input type="text" data-event-name maxlength="100" required placeholder="Feria de vinos de primavera">
+            </label>
+            <label class="field">
+                <span>Ubicación</span>
+                <input type="text" data-event-location maxlength="150" placeholder="Plaza central">
+            </label>
+            <label class="field">
+                <span>Fecha de inicio</span>
+                <input type="date" data-event-start required>
+            </label>
+            <label class="field">
+                <span>Fecha de fin</span>
+                <input type="date" data-event-end>
+            </label>
+            <label class="field span-2">
+                <span>Notas</span>
+                <textarea data-event-notes rows="2" maxlength="1000" placeholder="Observaciones del evento…"></textarea>
+            </label>
+        </div>
+
+        <div class="event-items-section">
+            <header class="combo-editor-header">
+                <div>
+                    <strong>Stock a asignar</strong>
+                    <p class="muted">El stock se descuenta de la tienda al crear el evento. Solo productos simples activos.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-event-add-item>+ Agregar producto</button>
+            </header>
+            <div class="event-item-rows" data-event-items></div>
+        </div>
+
+        <p class="form-error" data-event-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-event-cancel>Cancelar</button>
+            <button class="btn primary" type="submit" data-event-submit>Crear evento</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="event-stock-modal" title="Ampliar stock del evento">
+    <form class="form-stack" data-event-stock-form>
+        <p class="form-note" data-event-stock-summary></p>
+        <div class="event-item-rows" data-event-stock-items></div>
+        <p class="form-error" data-event-stock-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-event-stock-cancel>Cancelar</button>
+            <button class="btn ghost" type="button" data-event-stock-add-row>+ Agregar producto</button>
+            <button class="btn primary" type="submit" data-event-stock-submit>Ampliar stock</button>
+        </div>
+    </form>
+</erp-modal>
+
+<erp-modal id="event-close-modal" title="Cerrar evento" size="wide">
+    <form class="form-stack" data-event-close-form>
+        <p class="form-note" data-event-close-summary></p>
+        <div class="event-close-list" data-event-close-items></div>
+        <p class="form-note event-close-warning">
+            Al cerrar el evento se devolverá a la tienda todo el stock no vendido. Indique las pérdidas,
+            roturas o consumo interno antes de confirmar. Esta acción es definitiva.
+        </p>
+        <label class="field checkbox-field">
+            <input type="checkbox" data-event-close-backup checked>
+            <span>Generar respaldo de la base antes de cerrar</span>
+        </label>
+        <p class="form-error" data-event-close-error hidden></p>
+        <div class="form-actions">
+            <button class="btn ghost" type="button" data-event-close-cancel>Volver</button>
+            <button class="btn primary" type="submit" data-event-close-submit>Cerrar evento</button>
+        </div>
+    </form>
+</erp-modal>

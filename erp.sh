@@ -5,6 +5,7 @@
 #   ./erp.sh server 9000  Inicia el servidor web en otro puerto
 #   ./erp.sh cli          Abre la interfaz de terminal
 #   ./erp.sh init         Inicializa/verifica la base de datos
+#   ./erp.sh backup [ruta] Respalda la base de datos en caliente
 #   ./erp.sh help         Muestra esta ayuda
 
 set -u
@@ -31,6 +32,7 @@ erp_show_help() {
         '  ./erp.sh server [p]     Inicia el servidor web en el puerto p' \
         '  ./erp.sh cli            Abre la interfaz de terminal' \
         '  ./erp.sh init           Inicializa y verifica la base de datos' \
+        '  ./erp.sh backup [ruta]  Respalda la base de datos en caliente' \
         '  ./erp.sh help           Muestra esta ayuda' \
         '' \
         'Acceso demo: admin / admin123 · cajero / cajero123'
@@ -64,6 +66,58 @@ erp_init_database() {
     printf '  Auditoría:    %s eventos\n\n' "${journal}"
 }
 
+
+erp_backup_database() {
+    local destination="${1:-}"
+    erp_require_sqlite || return 1
+
+    if [[ -z "${destination}" ]]; then
+        local backup_dir="${ERP_ENTRY_DIR}/shared/data/backups"
+        destination="${backup_dir}/erp_licores_$(date +%Y%m%d_%H%M%S).db"
+    fi
+
+    if [[ "${destination}" == *$'\n'* || "${destination}" == *$'\r'* ]]; then
+        printf 'La ruta de respaldo contiene caracteres inválidos.\n' >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "${destination}")" || {
+        printf 'No se pudo crear el directorio de respaldo.\n' >&2
+        return 1
+    }
+
+    if [[ -e "${destination}" ]]; then
+        printf 'El archivo de respaldo ya existe: %s\n' "${destination}" >&2
+        return 1
+    fi
+
+    if command -v sqlite3 >/dev/null 2>&1; then
+        local escaped="${destination//\'/\'\'}"
+        if ! sqlite3 "${ERP_DB_PATH}" ".backup '${escaped}'"; then
+            printf 'No se pudo generar el respaldo con sqlite3.\n' >&2
+            return 1
+        fi
+    else
+        if ! db_open; then
+            printf 'No se pudo abrir la base para respaldar: %s\n' "${DB_LAST_ERROR:-error desconocido}" >&2
+            return 1
+        fi
+        if ! db_exec "VACUUM INTO $(db_quote "${destination}");"; then
+            db_close
+            printf 'No se pudo generar el respaldo: %s\n' "${DB_LAST_ERROR:-error desconocido}" >&2
+            return 1
+        fi
+        db_close
+    fi
+
+    if [[ ! -s "${destination}" ]]; then
+        printf 'El respaldo no se generó correctamente.\n' >&2
+        return 1
+    fi
+
+    printf 'Respaldo generado: %s\n' "${destination}"
+}
+
 mode="${1:-server}"
 
 case "${mode}" in
@@ -82,6 +136,9 @@ case "${mode}" in
         ;;
     init|seed)
         erp_init_database
+        ;;
+    backup|respaldo)
+        erp_backup_database "${2:-}"
         ;;
     help|-h|--help)
         erp_show_help

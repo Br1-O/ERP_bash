@@ -3,6 +3,9 @@
 
     const dataElement = document.getElementById('erp-data');
     let ERP = null;
+    let saleEvents = [];
+    let saleEventProducts = [];
+    let saleEventId = 0;
     try {
         ERP = dataElement ? JSON.parse(dataElement.textContent) : null;
     } catch (error) {
@@ -1014,12 +1017,19 @@
         }, 4200);
     }
 
+    function saleAvailableProducts() {
+        if (saleEventId > 0) {
+            return (saleEventProducts || []).filter((product) => Number(product.stock) > 0);
+        }
+        return (ERP.products || []).filter((product) =>
+            Number(product.active) === 1 && Number(product.stock) > 0);
+    }
+
     function saleItemRow(productId) {
         const row = document.createElement('div');
         row.className = 'sale-item-row';
 
-        const options = (ERP.products || []).filter((product) =>
-            Number(product.active) === 1 && Number(product.stock) > 0).map((product) => {
+        const options = saleAvailableProducts().map((product) => {
             const selected = String(product.id) === String(productId) ? ' selected' : '';
             return `<option value="${product.id}" data-price="${Number(product.price) || 0}" data-stock="${Number(product.stock) || 0}"${selected}>${escapeHtml(product.name)} · ${fmtMoney(product.price)} · ${fmtNumber(product.stock)} u.</option>`;
         }).join('');
@@ -1124,17 +1134,97 @@
     function addSaleItem(defaultId) {
         const container = $('sale-items');
         if (!container) return;
-        const firstAvailable = (ERP.products || []).find((product) =>
-            Number(product.active) === 1 && Number(product.stock) > 0);
+        const firstAvailable = saleAvailableProducts()[0];
         if (!firstAvailable) {
-            toast('Sin stock', 'No hay productos disponibles para vender.', 'error');
+            toast('Sin stock', saleEventId > 0 ? 'El evento no tiene stock disponible para vender.' : 'No hay productos disponibles para vender.', 'error');
             return;
         }
         container.appendChild(saleItemRow(defaultId || firstAvailable.id));
         updateSaleTotal();
     }
 
-    function openSaleModal() {
+    function saleEventOptions(selectedId = 0) {
+        if (!saleEvents.length) return '<option value="0">No hay eventos activos</option>';
+        return '<option value="0">Seleccione un evento…</option>' + saleEvents.map((event) =>
+            `<option value="${Number(event.id)}"${Number(event.id) === Number(selectedId) ? ' selected' : ''}>${escapeHtml(event.name)} · ${escapeHtml(event.location || 'Sin ubicación')}</option>`
+        ).join('');
+    }
+
+    async function refreshSaleEvents() {
+        try {
+            const response = await fetch('/api/events/active');
+            if (!response.ok) throw new Error('No se pudieron cargar los eventos.');
+            const payload = await response.json();
+            saleEvents = payload.items || [];
+        } catch (error) {
+            saleEvents = [];
+        }
+    }
+
+    function syncSaleChannel() {
+        const channel = $('sale-channel')?.value || 'LOCAL';
+        const field = $('sale-event-field');
+        const select = $('sale-event');
+        const fair = channel === 'FERIA';
+        if (field) field.hidden = !fair;
+        if (!fair) {
+            saleEventId = 0;
+            saleEventProducts = [];
+            if (select) select.value = '0';
+            const items = $('sale-items');
+            if (items) {
+                items.innerHTML = '';
+                addSaleItem();
+            }
+            return;
+        }
+        if (select) select.innerHTML = saleEventOptions(saleEventId);
+        if (!saleEvents.length) {
+            toast('Sin eventos activos', 'Cree un evento para registrar ventas de feria.', 'error');
+            if ($('sale-channel')) $('sale-channel').value = 'LOCAL';
+            if (field) field.hidden = true;
+            saleEventId = 0;
+            saleEventProducts = [];
+            const items = $('sale-items');
+            if (items) {
+                items.innerHTML = '';
+                addSaleItem();
+            }
+            return;
+        }
+        if (!saleEventId && saleEvents.length === 1) {
+            saleEventId = Number(saleEvents[0].id);
+            if (select) select.value = String(saleEventId);
+        }
+        saleEventChanged();
+    }
+
+    async function saleEventChanged() {
+        saleEventId = Number($('sale-event')?.value) || 0;
+        if (!saleEventId) {
+            saleEventProducts = [];
+            return;
+        }
+        try {
+            const response = await fetch(`/api/events/${saleEventId}`);
+            if (!response.ok) throw new Error('No se pudo cargar el evento.');
+            const event = await response.json();
+            saleEventProducts = (event.products || []).map((product) => ({
+                ...product,
+                stock: Number(product.available) || 0
+            }));
+            const items = $('sale-items');
+            if (items) {
+                items.innerHTML = '';
+                addSaleItem();
+            }
+        } catch (error) {
+            saleEventProducts = [];
+            toast('Evento no disponible', error.message, 'error');
+        }
+    }
+
+    async function openSaleModal() {
         if (!ERP) return;
         const modal = $('sale-modal');
         const customerSelect = $('sale-customer');
@@ -1142,10 +1232,16 @@
         const error = $('sale-error');
         if (!modal || !customerSelect || !items) return;
 
+        await refreshSaleEvents();
         customerSelect.innerHTML = '<option value="0">Consumidor final</option>' + (ERP.customers || []).map((customer) =>
             `<option value="${customer.id}">${escapeHtml(customer.name)} · ${escapeHtml(customer.type)}</option>`
         ).join('');
 
+        if ($('sale-channel')) $('sale-channel').value = 'LOCAL';
+        if ($('sale-event-field')) $('sale-event-field').hidden = true;
+        if ($('sale-event')) $('sale-event').innerHTML = saleEventOptions();
+        saleEventId = 0;
+        saleEventProducts = [];
         items.innerHTML = '';
         error.hidden = true;
         error.textContent = '';
@@ -1181,6 +1277,13 @@
             }
             return;
         }
+        if ($('sale-channel')?.value === 'FERIA' && !saleEventId) {
+            if (error) {
+                error.textContent = 'Seleccione un evento activo para la venta de feria.';
+                error.hidden = false;
+            }
+            return;
+        }
 
         const totals = saleTotals();
         if (!totals.result) {
@@ -1206,6 +1309,7 @@
                     payment_method: payment,
                     discount_type: totals.type,
                     discount_value: totals.type === 'none' ? '0' : totals.rawValue,
+                    event_id: $('sale-channel')?.value === 'FERIA' ? saleEventId : 0,
                     items
                 })
             });
@@ -1338,6 +1442,8 @@
         $('submit-sale')?.addEventListener('click', submitSale);
         $('sale-discount-type')?.addEventListener('change', syncDiscountFields);
         $('sale-discount-value')?.addEventListener('input', updateSaleTotal);
+        $('sale-channel')?.addEventListener('change', syncSaleChannel);
+        $('sale-event')?.addEventListener('change', saleEventChanged);
 
         modal.addEventListener('click', (event) => {
             if (event.target === modal) closeSaleModal();
@@ -1364,6 +1470,13 @@
     }
 
     function renderSyncStatus(status) {
+        const badge = $('sync-pending-badge');
+        if (badge) {
+            const pending = Number(status?.pending_events || 0);
+            badge.textContent = pending > 99 ? '99+' : String(pending);
+            badge.hidden = pending <= 0;
+        }
+
         const box = $('sync-status');
         if (!box) return;
         box.replaceChildren();
@@ -1497,6 +1610,8 @@
                 button.textContent = label;
             }
         });
+
+        syncFetchStatus().catch(() => {});
     }
 
     function initTheme() {

@@ -12,7 +12,7 @@ declare -g _ERP_DB_SINGLETON_LOADED=1
 
 ERP_ROOT_DIR="${ERP_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ERP_DB_PATH="${ERP_DB_PATH:-${ERP_ROOT_DIR}/shared/data/erp_licores.db}"
-ERP_SCHEMA_VERSION="${ERP_SCHEMA_VERSION:-7}"
+ERP_SCHEMA_VERSION="${ERP_SCHEMA_VERSION:-8}"
 
 declare -g DB_SINGLETON_PID=""
 declare -g DB_SINGLETON_IN_FD=""

@@ -58,6 +58,17 @@
                 <span>Cliente</span>
                 <select data-order-customer></select>
             </label>
+            <label class="field" data-order-channel-field>
+                <span>Canal</span>
+                <select data-order-channel>
+                    <option value="LOCAL">Tienda local</option>
+                    <option value="FERIA">Feria / evento</option>
+                </select>
+            </label>
+            <label class="field" data-order-event-field hidden>
+                <span>Evento</span>
+                <select data-order-event></select>
+            </label>
             <label class="field">
                 <span>Nombre del cliente</span>
                 <input type="text" data-order-customer-name maxlength="80" placeholder="Consumidor final">
@@ -137,6 +148,17 @@
             <label class="field">
                 <span>Cliente</span>
                 <select data-sale-customer></select>
+            </label>
+            <label class="field">
+                <span>Canal de venta</span>
+                <select data-sale-channel>
+                    <option value="LOCAL">Tienda local</option>
+                    <option value="FERIA">Feria / evento</option>
+                </select>
+            </label>
+            <label class="field" data-sale-event-field hidden>
+                <span>Evento</span>
+                <select data-sale-event></select>
             </label>
             <label class="field">
                 <span>Método de pago</span>

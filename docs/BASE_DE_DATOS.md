@@ -2,7 +2,7 @@
 
 - Motor: SQLite.
 - Archivo local: `shared/data/erp_licores.db`.
-- Versión de esquema: **7** (`ERP_SCHEMA_VERSION`).
+- Versión de esquema: **8** (`ERP_SCHEMA_VERSION`).
 - DDL y datos demo: `model/schema.sh`.
 - Modo: WAL, `foreign_keys = ON`, `busy_timeout = 5000`.
 - Separador de consultas del singleton: `|`.
@@ -18,7 +18,9 @@ El diagrama ER completo está en [DIAGRAMAS.md](DIAGRAMAS.md).
 | `Customers` | Clientes mayoristas y minoristas. |
 | `Inputs` | Insumos con stock, costo, proveedor y umbral. |
 | `Products` | Productos simples y combos, con stock, precio y umbral. |
-| `Sales` | Ventas directas y pedidos de clientes. |
+| `Sales` | Ventas directas y pedidos de clientes, con canal y evento. |
+| `Events` | Ferias/eventos con estado, finanzas y auditoría de cierre. |
+| `EventStock` | Stock asignado a cada evento por producto y costo congelado. |
 | `SaleItems` | Ítems de venta/pedido. |
 | `ProductionBatches` | Lotes de producción. |
 | `ProductionInputs` | Consumo de insumos por lote. |
@@ -29,7 +31,7 @@ El diagrama ER completo está en [DIAGRAMAS.md](DIAGRAMAS.md).
 | `Purchases` | Compras a proveedores. |
 | `PurchaseItems` | Ítems de compra. |
 | `BusinessInfo` | Datos de la empresa para facturas. |
-| `InventoryJournal` | Auditoría de cambios y movimientos; alimenta `/auditoria` y `/api/audit`. |
+| `InventoryJournal` | Outbox/auditoría de cambios y movimientos; alimenta `/auditoria`, `/api/audit` y la sincronización. |
 | `Users` | Usuarios del sistema. |
 | `Sessions` | Sesiones activas. |
 | `AppContext` | Configuración local y usuario de auditoría. |
@@ -128,6 +130,8 @@ sobre los componentes activos.
 | `cancelled_by` | TEXT | Usuario que solicita la anulación. |
 | `cancel_authorized_by` | TEXT | Administrador o supervisor que valida el PIN. |
 | `cancelled_at` | DATETIME | Momento de la anulación. |
+| `event_id` | INTEGER | FK opcional a `Events.id`; define venta de feria. |
+| `channel` | TEXT | `LOCAL`, `FERIA` o `ECOMMERCE`; por defecto `LOCAL`. |
 
 ### 2.7 `SaleItems`
 
@@ -249,8 +253,11 @@ Tabla de una sola fila (`id = 1`).
 | `user` | TEXT | Por defecto `sistema`. |
 | `action` | TEXT | Acción auditada. |
 | `entity` | TEXT | Tabla afectada. |
-| `payload` | TEXT | Detalle textual. |
+| `payload` | TEXT | Detalle JSON del movimiento (incluye `stock_delta` cuando aplica). |
 | `status` | TEXT | Por defecto `DONE`. |
+| `event_uuid` | TEXT | UUID v4 único generado por trigger; clave de idempotencia. |
+| `origin` | TEXT | `LOCAL`, `WEB` o `ECOMMERCE`; por defecto `LOCAL`. |
+| `synced` | INTEGER | `0` pendiente de push, `1` confirmado por el endpoint. |
 
 ### 2.18 `Users`, `Sessions`, `AppContext`, `SyncLog`
 
@@ -260,6 +267,43 @@ Tabla de una sola fila (`id = 1`).
 | `Sessions` | `token` PK, `username`, `expires_at` (epoch). |
 | `AppContext` | `key` PK, `value`; se usa para `user`, `sync_url` y `sync_token`. |
 | `SyncLog` | `id`, `timestamp`, `status`, `endpoint`, `message`, `payload_bytes`. |
+
+### 2.19 `Events`
+
+| Columna | Tipo | Restricciones |
+|---|---|---|
+| `id` | INTEGER | PK autoincremental. |
+| `name` | TEXT | NOT NULL, entre 1 y 100 caracteres. |
+| `location` | TEXT | Hasta 150 caracteres. |
+| `start_date` | DATE | NOT NULL. |
+| `end_date` | DATE | Opcional, `>= start_date`. |
+| `status` | TEXT | `active`, `closed` o `cancelled`; por defecto `active`. |
+| `notes` | TEXT | Hasta 1000 caracteres. |
+| `created_by` | TEXT | Usuario creador. |
+| `closed_by` | TEXT | Usuario que cerró. |
+| `total_revenue_cents` | INTEGER | Ingresos históricos en centavos. |
+| `total_cogs_cents` | INTEGER | Costo de vendido en centavos. |
+| `total_loss_cents` | INTEGER | Pérdidas valorizadas en centavos. |
+| `net_profit_cents` | INTEGER | `revenue - cogs - loss`. |
+| `created_at` | DATETIME | Por defecto `CURRENT_TIMESTAMP`. |
+| `closed_at` | DATETIME | Momento de cierre. |
+
+### 2.20 `EventStock`
+
+| Columna | Tipo | Restricciones |
+|---|---|---|
+| `id` | INTEGER | PK autoincremental. |
+| `event_id` | INTEGER | NOT NULL, FK a `Events.id` con `ON DELETE CASCADE`. |
+| `product_id` | INTEGER | NOT NULL, FK a `Products.id`. |
+| `allocated_qty` | INTEGER | `>= 0`. |
+| `sold_qty` | INTEGER | `>= 0`. |
+| `loss_qty` | INTEGER | `>= 0`. |
+| `returned_qty` | INTEGER | `>= 0`. |
+| `unit_cost_snapshot` | REAL | Costo congelado al asignar. |
+| `created_at` / `updated_at` | DATETIME | Marcas de tiempo. |
+
+`UNIQUE (event_id, product_id)` y
+`sold_qty + loss_qty + returned_qty <= allocated_qty`.
 
 ## 3. Relaciones
 
@@ -276,6 +320,9 @@ Products   1──N ProductRecipeStep
 Products   1──N ComboItems (como combo)
 Products   1──N ComboItems (como componente)
 Products   1──N TastingFeedback
+Products   1──N EventStock
+Events     1──N EventStock
+Events     1──N Sales (event_id)
 Inputs     1──N ProductRecipe
 Inputs     1──N ProductionInputs
 Inputs     1──N PurchaseItems
@@ -307,6 +354,13 @@ ProductionBatches 1──N ProductionInputs
 | `idx_purchaseitems_purchase` | `PurchaseItems(purchase_id)` |
 | `idx_purchaseitems_input` | `PurchaseItems(input_id)` |
 | `idx_synclog_timestamp` | `SyncLog(timestamp)` |
+| `idx_journal_event_uuid` | `InventoryJournal(event_uuid)` UNIQUE |
+| `idx_journal_sync` | `InventoryJournal(synced, origin, id)` |
+| `idx_sales_event` | `Sales(event_id)` |
+| `idx_sales_channel` | `Sales(channel)` |
+| `idx_events_status_dates` | `Events(status, start_date, end_date)` |
+| `idx_eventstock_event` | `EventStock(event_id)` |
+| `idx_eventstock_product` | `EventStock(product_id)` |
 
 ## 5. Triggers
 
@@ -338,6 +392,16 @@ ProductionBatches 1──N ProductionInputs
 | `trg_recipe_ai/au/ad` | Auditoría de receta. |
 | `trg_recipe_step_ai/au/ad` | Auditoría de pasos. |
 | `trg_combo_ai/au/ad` | Auditoría de componentes de combo. |
+| `trg_journal_event_uuid_ai` | Genera UUID v4 para cada evento del journal. |
+| `trg_events_status_bi` | Valida transiciones de estado del evento. |
+| `trg_events_immutable_bu` | Bloquea cambios en eventos cerrados/cancelados. |
+| `trg_events_close_bi` | Calcula sobrantes, valida pérdidas y devuelve stock al cerrar. |
+| `trg_events_cancel_bi` | Cancela solo sin ventas/pérdidas y devuelve el 100 %. |
+| `trg_events_delete_bi` | Impide eliminar eventos. |
+| `trg_event_stock_allocate_ai/_au` | Descuenta `SEDE` al asignar/ampliar stock y audita. |
+| `trg_event_stock_immutable_bu` | Bloquea cambios de stock de eventos cerrados/cancelados. |
+| `trg_event_stock_delete_bi` | Impide eliminar stock de evento. |
+| `trg_sales_event_channel_bi/_bu` | Normaliza `channel` y valida `event_id`. |
 
 ## 6. Invariantes
 
@@ -360,6 +424,14 @@ ProductionBatches 1──N ProductionInputs
     activo; el registro original nunca se borra físicamente.
 13. `Sales.order_stage` no puede retroceder desde `paid`, `delivered` o
     `cancel`.
+14. Una venta de feria (`event_id` no nulo) descuenta solo `EventStock`; una
+    venta `LOCAL` descuenta `Products.stock`.
+15. El stock asignado a un evento nunca se reduce; solo se amplía.
+16. Un evento `closed` o `cancelled` es inmutable y no puede eliminarse.
+17. La suma `sold_qty + loss_qty + returned_qty` siempre coincide con
+    `allocated_qty` después del cierre.
+18. Cada fila de `InventoryJournal` tiene `event_uuid` único y `synced=0`
+    hasta que el endpoint confirma el lote.
 
 ## 7. Migración y datos demo
 
@@ -376,6 +448,10 @@ ProductionBatches 1──N ProductionInputs
 - `Suppliers.active`, `Customers.active`.
 - `Purchases.stock_applied`; normaliza estados legacy (`Recibida` →
   `finished`, etc.).
+- `Sales.event_id`, `Sales.channel`.
+- `InventoryJournal.event_uuid`, `origin`, `synced`; las filas previas reciben
+  UUID y se marcan `synced=1` para no reenviar historia.
+- Crea `Events`, `EventStock` y sus índices/triggers si no existen.
 
 Al migrar, las ventas y compras existentes finalizadas quedan con
 `stock_applied = 1` para no volver a mover stock. Las ventas legacy con
@@ -383,8 +459,8 @@ Al migrar, las ventas y compras existentes finalizadas quedan con
 `delivered` y los pedidos finalizados con `delivered`.
 
 `./erp.sh init` crea la base si no existe y carga datos demo reproducibles:
-10 productos, 10 insumos, 8 clientes, 5 proveedores, 101 ventas, 12 lotes y
-los eventos de auditoría correspondientes.
+10 productos, 10 insumos, 8 clientes, 5 proveedores, 101 ventas, 12 lotes,
+4 eventos de feria y los eventos de auditoría correspondientes.
 
 ## 8. Operación y respaldo
 
@@ -393,8 +469,9 @@ los eventos de auditoría correspondientes.
 rm -f shared/data/erp_licores.db shared/data/erp_licores.db-wal shared/data/erp_licores.db-shm
 ./erp.sh init
 
-# Respaldo en caliente
-sqlite3 shared/data/erp_licores.db ".backup '/tmp/erp_backup.db'"
+# Respaldo en caliente (sin detener el servidor)
+./erp.sh backup
+./erp.sh backup /tmp/erp_backup.db
 ```
 
 Si no existe `sqlite3`, usar el shim de Node para consultas de solo lectura:

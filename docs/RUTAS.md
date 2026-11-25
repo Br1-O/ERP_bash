@@ -18,7 +18,8 @@ páginas redirigen a `/login`; las APIs responden `401` con JSON.
 | GET | `/inventario?product=<id>&produce=1` | Abre el modal de producción con receta precargada. Si es combo, abre el detalle. |
 | GET | `/compras` | Pedidos de compra, estados, proveedores y reposición sugerida. Incluye alta manual de pedidos. |
 | GET | `/compras?input=<id>` | Inicia un borrador de pedido con el insumo seleccionado y los demás insumos activos del mismo proveedor. |
-| GET | `/ventas` | Todas las ventas y pedidos, estados, alta de venta directa, anulación y facturación. |
+| GET | `/ventas` | Todas las ventas y pedidos, estados, alta de venta directa, selección de canal/evento, anulación y facturación. |
+| GET | `/eventos` | Ferias: KPIs, gráficos, asignación de stock, cierre con pérdidas y cancelación. |
 | GET | `/auditoria` | Historial completo de `InventoryJournal` con búsqueda, paginación y enlaces a entidades. |
 | GET | `/contactos` | Agenda de clientes y proveedores. |
 | GET | `/usuarios` | Administración de vendedores y supervisores. Solo `admin`. |
@@ -30,7 +31,7 @@ Acceso por rol:
 |---|---|
 | `/dashboard`, `/inteligencia` | `admin`, supervisor con `can_view_metrics=1`. |
 | `/inventario`, `/compras` | `admin`, supervisor con `can_manage_stock=1`. |
-| `/ventas`, `/auditoria`, `/contactos` | Cualquier usuario activo. |
+| `/ventas`, `/eventos`, `/auditoria`, `/contactos` | Cualquier usuario activo. |
 | `/usuarios`, `/configuracion` | Solo `admin`. |
 
 Si el usuario no tiene permiso para una página, el router lo redirige a su
@@ -55,11 +56,11 @@ permisos).
 | Ruta | Contenido |
 |---|---|
 | `/assets/app.css` | Estilos globales, componentes y responsive. |
-| `/assets/app.js` | Dashboard, ventas, contactos y sincronización. |
+| `/assets/app.js` | Dashboard, ventas, contactos y sincronización (badge de pendientes). |
 | `/assets/insights.js` | Página de inteligencia de canasta: matriz, combos y sustitutos. |
 | `/assets/billing.js` | Patrón Money y estrategias de descuento. |
 | `/assets/components.js` | Carga y utilidades de web components. |
-| `/components/<componente>/<archivo>.js\|css\|html` | Assets de componentes. |
+| `/components/<componente>/<archivo>.js\|css\|html` | Assets de componentes, incluido `event-manager`. |
 
 ## 3. API
 
@@ -274,9 +275,9 @@ consumo, última compra y cantidad sugerida.
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/api/orders?q=&status=<stage>\|all&page=&per_page=` | Lista ventas y pedidos. `status` filtra por `order_stage` (`draft`, `pending`, `preparing`, `confirmed`, `paid`, `delivered`, `cancel`), por el alias legacy `finished` o por `all`. Cada registro incluye `order_type` (`direct` u `order`) y datos de anulación. |
-| GET | `/api/orders/:id` | Detalle de una venta directa o pedido, con `order_stage`, `order_type` y datos de anulación. |
-| POST | `/api/orders` | Crea un pedido. Acepta `status` inicial; desde `confirmed` se descuenta stock. |
+| GET | `/api/orders?q=&status=<stage>\|all&page=&per_page=` | Lista ventas y pedidos. `status` filtra por `order_stage` (`draft`, `pending`, `preparing`, `confirmed`, `paid`, `delivered`, `cancel`), por el alias legacy `finished` o por `all`. Cada registro incluye `order_type` (`direct` u `order`), `channel`, `event_id`, `event_name` y datos de anulación. |
+| GET | `/api/orders/:id` | Detalle de una venta directa o pedido, con `order_stage`, `order_type`, `channel`, `event_id`, `event_name` y datos de anulación. |
+| POST | `/api/orders` | Crea un pedido. Acepta `status` inicial y `event_id` opcional para ferias; desde `confirmed` se descuenta stock del evento o de `SEDE`. |
 | PUT | `/api/orders/:id` | Actualiza cliente, pago, descuento o ítems mientras el pedido esté en `draft`, `pending` o `preparing`. |
 | PUT | `/api/orders/:id/status` | Cambia el `order_stage` a `draft`, `pending`, `preparing`, `confirmed`, `paid` o `delivered`. `finished` se interpreta como `delivered`. |
 | DELETE | `/api/orders/:id` | Baja lógica de pedidos en `draft`, `pending` o `preparing`; exige `reason` y `pin`. |
@@ -313,6 +314,7 @@ Ejemplo de creación:
   "discount_value": 5,
   "status": "pending",
   "notes": "Entregar el viernes",
+  "event_id": 3,
   "items": [
     { "product_id": 8, "quantity": 2, "unit_price": 150.5 }
   ]
@@ -321,8 +323,9 @@ Ejemplo de creación:
 
 `customer_id = 0` permite capturar un cliente nuevo y guardarlo con
 `save_customer = 1`. Un `unit_price` vacío usa el precio actual del producto.
-Al confirmar se descuenta el stock, incluidos los componentes de combos; al
-anular se restaura una sola vez.
+`event_id` es opcional: si se envía, el pedido queda con `channel="FERIA"` y al
+confirmar descuenta `EventStock`; sin evento usa `channel="LOCAL"` y descuenta
+`Products.stock`. Al anular se restaura una sola vez en el ámbito correcto.
 
 Ejemplo de cambio de estado:
 
@@ -420,17 +423,17 @@ Solo administradores (`role = admin`).
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| GET | `/api/sync/status` | Configuración y última sincronización. |
+| GET | `/api/sync/status` | Configuración, última sincronización, `pending_events` y `last_remote_journal_id`. |
 | POST | `/api/sync/config` | Guarda `url` y, opcionalmente, `token`. Un token vacío conserva el actual; `clear_token=1` lo elimina. |
-| POST | `/api/sync/push` | Envía el snapshot local al endpoint. |
+| POST | `/api/sync/push` | Ejecuta las 3 fases: push de eventos pendientes, pull e-commerce y snapshot de respaldo. |
 
 Códigos esperados:
 
-- `200`: configuración guardada o snapshot aceptado.
+- `200`: configuración guardada o sincronización completa aceptada.
 - `400`: URL/token inválidos o configuración incompleta.
 - `401`: sesión inválida.
 - `403`: usuario sin rol de administrador.
-- `502`: endpoint remoto caído o respuesta no exitosa.
+- `502`: endpoint remoto caído o respuesta no exitosa en alguna fase.
 
 ### 3.9 Analítica de canasta
 
@@ -444,6 +447,41 @@ Cada combo incluye `a_id`, `b_id`, `a_name`, `b_name`, `corr`, `slope`,
 `b_name`, `corr` y `cov`. Los productos de la matriz incluyen `id`, `name` y
 `units`. La página `/inteligencia` consume el endpoint completo; el dashboard
 mantiene los límites compactos.
+
+### 3.10 Eventos y ferias
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/api/events?status=&q=&date_from=&date_to=&page=&per_page=` | Lista paginada de eventos con KPIs y filtros por estado, texto y rango de fecha de inicio. |
+| GET | `/api/events/active` | Eventos activos para los selectores de venta/pedido. |
+| GET | `/api/events/:id` | Detalle del evento con stock asignado, finanzas, ventas/comprobantes (`sales`) y movimientos auditados (`movements`). |
+| POST | `/api/events` | Crea un evento (`name`, `location`, `start_date`, `end_date`, `notes`). |
+| POST | `/api/events/:id/stock` | Amplía el stock asignado. Acepta `items: [{product_id, quantity}]` o los arreglos `product_ids`/`quantities`. |
+| POST | `/api/events/:id/close` | Cierra un evento; acepta `losses: [{product_id, loss_qty}]` y `backup: 1` para respaldar la base antes del cierre; calcula sobrantes y devuelve stock a `SEDE`. |
+| POST | `/api/events/:id/cancel` | Cancela un evento sin ventas ni pérdidas y devuelve el 100 % del stock. |
+| GET | `/api/events/:id/stats` | Estadísticas del evento: finanzas, unidades, canales y `series` histórica. |
+
+Ejemplo de cierre:
+
+```json
+{
+  "losses": [
+    { "product_id": 1, "loss_qty": 2 }
+  ],
+  "backup": 1
+}
+```
+
+Con `backup: 1` se genera un archivo en `shared/data/backups/` antes de
+liquidar; la respuesta incluye `backup_path`. Si el respaldo falla, el cierre
+no se ejecuta.
+
+El evento debe estar `active`. El cierre exige que no haya pedidos pendientes ni
+devoluciones previas, calcula `returned_qty = allocated_qty - sold_qty - loss_qty`
+y guarda `total_revenue_cents`, `total_cogs_cents`, `total_loss_cents` y
+`net_profit_cents`. La cancelación solo se permite si `sold_qty=0` y
+`loss_qty=0`. Después de `closed` o `cancelled` el evento y su stock son
+inmutables.
 
 ## 4. Códigos de estado generales
 

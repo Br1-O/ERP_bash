@@ -185,6 +185,22 @@ handle_orders_page() {
     http_send 200 "text/html; charset=UTF-8" "${html}"
 }
 
+handle_events_page() {
+    local token="${HTTP_COOKIES[erp_session]:-}"
+    if ! api_load_session "${token}"; then
+        http_redirect "/login"
+        return
+    fi
+    if ! api_can_view_metrics && ! api_can_manage_stock; then
+        http_redirect "/ventas"
+        return
+    fi
+    local alerts html
+    alerts=$(current_alerts_count)
+    html=$(view_events_page "${AUTH_USER}" "${AUTH_ROLE}" "${alerts}")
+    http_send 200 "text/html; charset=UTF-8" "${html}"
+}
+
 handle_audit_page() {
     local token="${HTTP_COOKIES[erp_session]:-}"
     if ! api_load_session "${token}"; then
@@ -314,11 +330,12 @@ handle_api_sales() {
         return
     fi
 
-    local customer_id payment_method discount_type discount_value
+    local customer_id payment_method discount_type discount_value event_id
     customer_id=$(json_body_param "customer_id" "0")
     payment_method=$(json_body_param "payment_method" "Efectivo")
     discount_type=$(json_body_param "discount_type" "none")
     discount_value=$(json_body_param "discount_value" "0")
+    event_id=$(json_body_param "event_id" "0")
 
     local -a product_ids=()
     local -a quantities=()
@@ -328,7 +345,7 @@ handle_api_sales() {
     fi
 
     if api_register_sale "${customer_id}" "${payment_method}" product_ids quantities \
-        "${discount_type}" "${discount_value}"; then
+        "${discount_type}" "${discount_value}" "${event_id}"; then
         http_send_json "{\"ok\":true,\"sale_id\":$(json_number "${SALE_ID}"),\"subtotal\":$(json_number "${SALE_SUBTOTAL}"),\"discount\":$(json_number "${SALE_DISCOUNT}"),\"total\":$(json_number "${SALE_TOTAL}")}" 201
     else
         local status=400
@@ -822,6 +839,105 @@ handle_api_audit_list() {
     http_send_json "$(api_audit_json "${q}" "${page}" "${per_page}")" 200
 }
 
+handle_api_events_list() {
+    handle_api_session_required || return
+    http_send_json "$(api_events_list_json "$(http_param "q" "")" "$(http_param "status" "all")" \
+        "$(http_param "page" "1")" "$(http_param "per_page" "10")" \
+        "$(http_param "date_from" "")" "$(http_param "date_to" "")")" 200
+}
+
+handle_api_events_active() {
+    handle_api_session_required || return
+    http_send_json "{\"items\":$(api_events_active_json)}" 200
+}
+
+handle_api_events_stats() {
+    handle_api_metrics_required || return
+    http_send_json "$(api_events_stats_json)" 200
+}
+
+handle_api_events_detail() {
+    local event_id="$1"
+    handle_api_session_required || return
+    local payload
+    if payload=$(api_events_detail_json "${event_id}"); then
+        http_send_json "${payload}" 200
+    else
+        http_json_error "Evento no encontrado." 404
+    fi
+}
+
+handle_api_events_create() {
+    handle_api_stock_required || return
+    local name location start_date end_date notes
+    name=$(json_body_param "name" "")
+    location=$(json_body_param "location" "")
+    start_date=$(json_body_param "start_date" "")
+    end_date=$(json_body_param "end_date" "")
+    notes=$(json_body_param "notes" "")
+
+    local -a product_ids=()
+    local -a quantities=()
+    if ! json_body_parse_items product_ids quantities; then
+        http_json_error "El evento debe incluir al menos un producto." 400
+        return
+    fi
+
+    if api_events_create "${name}" "${location}" "${start_date}" "${end_date}" "${notes}" \
+        product_ids quantities; then
+        http_send_json "{\"ok\":true,\"event_id\":$(json_number "${EVENT_ID}")}" 201
+    else
+        http_json_error "${AUTH_ERROR}" 400
+    fi
+}
+
+handle_api_events_add_stock() {
+    local event_id="$1"
+    handle_api_stock_required || return
+    local -a product_ids=()
+    local -a quantities=()
+    if ! json_body_parse_items product_ids quantities; then
+        http_json_error "Debe indicar productos y cantidades." 400
+        return
+    fi
+    if api_events_add_stock "${event_id}" product_ids quantities; then
+        http_send_json "{\"ok\":true,\"event_id\":$(json_number "${EVENT_ID}")}" 200
+    else
+        http_json_error "${AUTH_ERROR}" 400
+    fi
+}
+
+handle_api_events_close() {
+    local event_id="$1"
+    handle_api_stock_required || return
+    local -a loss_product_ids=()
+    local -a loss_quantities=()
+    local backup_requested
+    json_body_parse_losses loss_product_ids loss_quantities || true
+    backup_requested=$(json_body_param "backup" "0")
+    if [[ "${backup_requested}" == "1" || "${backup_requested}" == "true" ]]; then
+        if ! api_events_backup_database; then
+            http_json_error "${AUTH_ERROR:-No se pudo generar el respaldo previo.}" 400
+            return
+        fi
+    fi
+    if api_events_close "${event_id}" loss_product_ids loss_quantities; then
+        http_send_json "{\"ok\":true,\"event_id\":$(json_number "${EVENT_ID}"),\"revenue\":$(json_number "${EVENT_REVENUE}"),\"cogs\":$(json_number "${EVENT_COGS}"),\"loss\":$(json_number "${EVENT_LOSS}"),\"net_profit\":$(json_number "${EVENT_NET_PROFIT}"),\"backup_path\":$(json_quote "${EVENT_BACKUP_PATH}")}" 200
+    else
+        http_json_error "${AUTH_ERROR}" 400
+    fi
+}
+
+handle_api_events_cancel() {
+    local event_id="$1"
+    handle_api_stock_required || return
+    if api_events_cancel "${event_id}"; then
+        http_send_json "{\"ok\":true,\"event_id\":$(json_number "${EVENT_ID}")}" 200
+    else
+        http_json_error "${AUTH_ERROR}" 400
+    fi
+}
+
 handle_api_order_detail() {
     local order_id="$1"
     handle_api_session_required || return
@@ -836,7 +952,7 @@ handle_api_order_detail() {
 handle_api_order_create() {
     handle_api_session_required || return
     local customer_id customer_name customer_type customer_phone customer_email
-    local payment_method notes discount_type discount_value status save_customer
+    local payment_method notes discount_type discount_value status save_customer event_id
     customer_id=$(json_body_param "customer_id" "0")
     customer_name=$(json_body_param "customer_name" "")
     customer_type=$(json_body_param "customer_type" "Minorista")
@@ -848,6 +964,7 @@ handle_api_order_create() {
     discount_value=$(json_body_param "discount_value" "0")
     status=$(json_body_param "status" "pending")
     save_customer=$(json_body_param "save_customer" "1")
+    event_id=$(json_body_param "event_id" "0")
 
     local -a product_ids=()
     local -a quantities=()
@@ -860,7 +977,7 @@ handle_api_order_create() {
     if api_order_create "${customer_id}" "${customer_name}" "${customer_type}" \
         "${customer_phone}" "${customer_email}" "${payment_method}" "${notes}" \
         "${discount_type}" "${discount_value}" "${status}" "${save_customer}" \
-        product_ids quantities unit_prices; then
+        product_ids quantities unit_prices "${event_id}"; then
         http_send_json "{\"ok\":true,\"order_id\":$(json_number "${ORDER_ID}"),\"total\":$(json_number "${ORDER_TOTAL}")}" 201
     else
         local rc=$? status_code=400
@@ -1233,6 +1350,38 @@ handle_request() {
         handle_api_purchase_status "${BASH_REMATCH[1]}"
         return
     fi
+    if [[ "${method}" == "GET" && "${path}" == "/api/events" ]]; then
+        handle_api_events_list
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" == "/api/events/active" ]]; then
+        handle_api_events_active
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" == "/api/events/stats" ]]; then
+        handle_api_events_stats
+        return
+    fi
+    if [[ "${method}" == "GET" && "${path}" =~ ^/api/events/([0-9]+)$ ]]; then
+        handle_api_events_detail "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "POST" && "${path}" == "/api/events" ]]; then
+        handle_api_events_create
+        return
+    fi
+    if [[ "${method}" == "POST" && "${path}" =~ ^/api/events/([0-9]+)/stock$ ]]; then
+        handle_api_events_add_stock "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "POST" && "${path}" =~ ^/api/events/([0-9]+)/close$ ]]; then
+        handle_api_events_close "${BASH_REMATCH[1]}"
+        return
+    fi
+    if [[ "${method}" == "POST" && "${path}" =~ ^/api/events/([0-9]+)/cancel$ ]]; then
+        handle_api_events_cancel "${BASH_REMATCH[1]}"
+        return
+    fi
     if [[ "${method}" == "GET" && "${path}" =~ ^/api/orders/([0-9]+)$ ]]; then
         handle_api_order_detail "${BASH_REMATCH[1]}"
         return
@@ -1303,6 +1452,9 @@ handle_request() {
         "GET /ventas")
             handle_orders_page
             ;;
+        "GET /eventos")
+            handle_events_page
+            ;;
         "GET /auditoria")
             handle_audit_page
             ;;
@@ -1324,6 +1476,9 @@ handle_request() {
             ;;
         "GET /api/analytics/basket")
             handle_api_metrics_required && http_send_json "$(analytics_basket_full_json)" 200
+            ;;
+        "GET /api/analytics/events-summary")
+            handle_api_metrics_required && http_send_json "$(analytics_events_summary_json)" 200
             ;;
         "GET /api/sync/status")
             handle_api_sync_status

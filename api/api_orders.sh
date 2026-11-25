@@ -100,25 +100,27 @@ api_orders_json() {
 
     local rows row id date customer_id customer_name total_amount subtotal discount stage_value
     local payment notes created_by items units stock_applied order_type_value stock_status
-    local cancel_reason cancelled_by cancel_authorized_by cancelled_at item out=""
+    local cancel_reason cancelled_by cancel_authorized_by cancelled_at channel event_id event_name item out=""
     rows=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(s.customer_id, 0),
                             COALESCE(c.name, 'Consumidor final'), s.total_amount, s.subtotal_amount,
                             s.discount_amount, ${stage_expr}, s.payment_method, COALESCE(s.notes, ''),
                             s.created_by, COUNT(si.id), COALESCE(SUM(si.quantity), 0),
                             s.stock_applied, s.order_type, s.status,
                             COALESCE(s.cancel_reason, ''), COALESCE(s.cancelled_by, ''),
-                            COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), '')
+                            COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), ''),
+                            COALESCE(s.channel, 'LOCAL'), COALESCE(s.event_id, 0), COALESCE(e.name, '')
                      FROM Sales s
                      LEFT JOIN Customers c ON c.id = s.customer_id
+                     LEFT JOIN Events e ON e.id = s.event_id
                      LEFT JOIN SaleItems si ON si.sale_id = s.id
                      WHERE ${where_sql}
                      GROUP BY s.id
                      ORDER BY s.timestamp DESC, s.id DESC
                      LIMIT ${per_page} OFFSET ${offset};")
 
-    while IFS='|' read -r id date customer_id customer_name total_amount subtotal discount stage_value payment notes created_by items units stock_applied order_type_value stock_status cancel_reason cancelled_by cancel_authorized_by cancelled_at; do
+    while IFS='|' read -r id date customer_id customer_name total_amount subtotal discount stage_value payment notes created_by items units stock_applied order_type_value stock_status cancel_reason cancelled_by cancel_authorized_by cancelled_at channel event_id event_name; do
         [[ -z "${id}" ]] && continue
-        item=$(printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"total":%s,"subtotal":%s,"discount":%s,"status":%s,"stock_status":%s,"payment_method":%s,"notes":%s,"created_by":%s,"items":%s,"units":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s}' \
+        item=$(printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"total":%s,"subtotal":%s,"discount":%s,"status":%s,"stock_status":%s,"payment_method":%s,"notes":%s,"created_by":%s,"items":%s,"units":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s,"channel":%s,"event_id":%s,"event_name":%s}' \
             "$(json_number "${id}")" "$(json_quote "${date}")" "$(json_number "${customer_id}")" \
             "$(json_quote "${customer_name}")" "$(json_number "${total_amount}")" \
             "$(json_number "${subtotal}")" "$(json_number "${discount}")" \
@@ -127,7 +129,8 @@ api_orders_json() {
             "$(json_number "${items}")" "$(json_number "${units}")" "$(json_number "${stock_applied}")" \
             "$(json_quote "${order_type_value}")" "$(json_quote "${cancel_reason}")" \
             "$(json_quote "${cancelled_by}")" "$(json_quote "${cancel_authorized_by}")" \
-            "$(json_quote "${cancelled_at}")")
+            "$(json_quote "${cancelled_at}")" "$(json_quote "${channel}")" \
+            "$(json_number "${event_id}")" "$(json_quote "${event_name}")")
         out+="${out:+,}${item}"
     done <<< "${rows}"
 
@@ -145,7 +148,7 @@ api_order_detail_json() {
     local row id date customer_id customer_name customer_type customer_phone customer_email
     local subtotal discount_type discount_value discount_total total payment notes stage_value
     local created_by stock_applied order_type_value stock_status cancel_reason cancelled_by
-    local cancel_authorized_by cancelled_at
+    local cancel_authorized_by cancelled_at channel event_id event_name
     row=$(db_query "SELECT s.id, datetime(s.timestamp), COALESCE(s.customer_id, 0),
                            COALESCE(c.name, 'Consumidor final'), COALESCE(c.type, ''),
                            COALESCE(c.phone, ''), COALESCE(c.email, ''),
@@ -153,15 +156,17 @@ api_order_detail_json() {
                            s.total_amount, s.payment_method, COALESCE(s.notes, ''), ${stage_expr},
                            s.created_by, s.stock_applied, s.order_type, s.status,
                            COALESCE(s.cancel_reason, ''), COALESCE(s.cancelled_by, ''),
-                           COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), '')
+                           COALESCE(s.cancel_authorized_by, ''), COALESCE(datetime(s.cancelled_at), ''),
+                           COALESCE(s.channel, 'LOCAL'), COALESCE(s.event_id, 0), COALESCE(e.name, '')
                     FROM Sales s
                     LEFT JOIN Customers c ON c.id = s.customer_id
+                    LEFT JOIN Events e ON e.id = s.event_id
                     WHERE s.id = ${order_id};")
     [[ -z "${row}" ]] && return 1
     IFS='|' read -r id date customer_id customer_name customer_type customer_phone customer_email \
         subtotal discount_type discount_value discount_total total payment notes stage_value \
         created_by stock_applied order_type_value stock_status cancel_reason cancelled_by \
-        cancel_authorized_by cancelled_at <<< "${row}"
+        cancel_authorized_by cancelled_at channel event_id event_name <<< "${row}"
 
     local item_rows item_out="" iid product_id product_name is_combo quantity unit_price item_total
     item_rows=$(db_query "SELECT si.id, si.product_id, p.name, p.is_combo, si.quantity,
@@ -178,7 +183,7 @@ api_order_detail_json() {
             "$(json_number "${unit_price}")" "$(json_number "${item_total}")")"
     done <<< "${item_rows}"
 
-    printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"customer_type":%s,"customer_phone":%s,"customer_email":%s,"subtotal":%s,"discount_type":%s,"discount_value":%s,"discount":%s,"total":%s,"payment_method":%s,"notes":%s,"status":%s,"stock_status":%s,"created_by":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s,"items":[%s]}' \
+    printf '{"id":%s,"date":%s,"customer_id":%s,"customer":%s,"customer_type":%s,"customer_phone":%s,"customer_email":%s,"subtotal":%s,"discount_type":%s,"discount_value":%s,"discount":%s,"total":%s,"payment_method":%s,"notes":%s,"status":%s,"stock_status":%s,"created_by":%s,"stock_applied":%s,"order_type":%s,"cancel_reason":%s,"cancelled_by":%s,"cancel_authorized_by":%s,"cancelled_at":%s,"channel":%s,"event_id":%s,"event_name":%s,"items":[%s]}' \
         "$(json_number "${id}")" "$(json_quote "${date}")" "$(json_number "${customer_id}")" \
         "$(json_quote "${customer_name}")" "$(json_quote "${customer_type}")" \
         "$(json_quote "${customer_phone}")" "$(json_quote "${customer_email}")" \
@@ -189,7 +194,8 @@ api_order_detail_json() {
         "$(json_quote "${created_by}")" "$(json_number "${stock_applied}")" \
         "$(json_quote "${order_type_value}")" "$(json_quote "${cancel_reason}")" \
         "$(json_quote "${cancelled_by}")" "$(json_quote "${cancel_authorized_by}")" \
-        "$(json_quote "${cancelled_at}")" "${item_out}"
+        "$(json_quote "${cancelled_at}")" "$(json_quote "${channel}")" \
+        "$(json_number "${event_id}")" "$(json_quote "${event_name}")" "${item_out}"
 }
 
 _api_orders_upsert_customer() {
@@ -323,11 +329,19 @@ api_order_create() {
     local -n _order_product_ids=${12}
     local -n _order_quantities=${13}
     local -n _order_unit_prices=${14}
+    local event_id="${15:-0}"
 
     AUTH_ERROR=""
     ORDER_ID=""
     ORDER_CUSTOMER_ID=""
     ORDER_TOTAL=""
+
+    [[ "${event_id}" =~ ^[0-9]+$ ]] || event_id=0
+    if (( event_id > 0 )); then
+        local event_status
+        event_status=$(db_scalar "SELECT status FROM Events WHERE id = ${event_id};" 2>/dev/null || true)
+        [[ "${event_status}" == "active" ]] || { AUTH_ERROR="El evento no existe o no está activo."; return 1; }
+    fi
 
     case "${payment_method}" in
         Efectivo|Transferencia|Tarjeta) ;;
@@ -342,6 +356,12 @@ api_order_create() {
     esac
     [[ "${save_customer}" == "1" ]] || save_customer=0
 
+    local safe_event="NULL" order_channel="LOCAL"
+    if (( event_id > 0 )); then
+        safe_event="${event_id}"
+        order_channel="FERIA"
+    fi
+
     tx_begin || { AUTH_ERROR="No se pudo iniciar la transacción."; return 1; }
     db_set_context_user "${AUTH_USER:-sistema}" >/dev/null 2>&1 || true
 
@@ -353,10 +373,12 @@ api_order_create() {
 
     if ! db_exec "INSERT INTO Sales (timestamp, customer_id, subtotal_amount, discount_type,
                                     discount_value, discount_amount, total_amount, payment_method,
-                                    status, notes, created_by, stock_applied, order_type, order_stage)
+                                    status, notes, created_by, stock_applied, order_type, order_stage,
+                                    event_id, channel)
                   VALUES (datetime('now', 'localtime'), ${ORDER_CUSTOMER_ID}, 0, 'none', 0, 0, 0,
                           $(db_quote "${payment_method}"), 'pending', $(db_quote "${notes}"),
-                          $(db_quote "${AUTH_USER:-sistema}"), 0, 'order', $(db_quote "${initial_stage}"));"; then
+                          $(db_quote "${AUTH_USER:-sistema}"), 0, 'order', $(db_quote "${initial_stage}"),
+                          ${safe_event}, $(db_quote "${order_channel}"));"; then
         AUTH_ERROR="${DB_LAST_ERROR:-No se pudo crear el pedido.}"
         tx_rollback
         return 1

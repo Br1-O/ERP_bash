@@ -109,3 +109,33 @@ valor_categoría = Σ(cantidad vendida · precio unitario)
 - Ticket promedio: ingresos / ventas.
 - Valor de inventario: `Σ(stock · costo)` de productos activos.
 - Clientes y alertas de stock según las tablas locales.
+
+## Analítica de eventos y ferias
+
+`api_events_stats_json` y `analytics_events_summary_json` calculan sobre
+eventos cerrados, usando los importes históricos congelados en `Events`:
+
+```text
+ingresos        = Σ total_revenue_cents / 100
+costo vendido   = Σ total_cogs_cents / 100
+pérdidas        = Σ total_loss_cents / 100
+ganancia neta   = ingresos - costo vendido - pérdidas
+margen neto     = ganancia neta / ingresos · 100
+conversión      = unidades vendidas / unidades apartadas · 100
+tasa de merma   = unidades perdidas / unidades apartadas · 100
+```
+
+Las medidas de centralización y dispersión (media, mediana, rango, desvío
+estándar muestral y `CV%`) se calculan dos veces: sobre la ganancia neta por
+evento y sobre las unidades vendidas por evento.
+
+La comparativa de canales agrupa `Sales.channel`:
+
+- `LOCAL` se muestra como `SEDE`.
+- `FERIA` son ventas vinculadas a un evento.
+- `ECOMMERCE` son ventas traídas por la fase de pull.
+
+El campo `series` devuelve, por evento cerrado, `revenue`, `net_profit`,
+`sold`, `loss` y `returned` para los gráficos comparativos y la torta de
+distribución. El reintegro se calcula como
+`allocated_qty - sold_qty - loss_qty` al cerrar el evento.

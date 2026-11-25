@@ -12,7 +12,7 @@ Los emprendimientos artesanales y los puntos de venta móviles suelen enfrentar 
 
 - **Portabilidad y bajo consumo:** al prescindir de runtimes pesados (Python, JVM, Node.js en el servidor o frameworks SPA), el sistema se ejecuta directamente sobre el shell de Linux, con un consumo mínimo de memoria RAM y CPU.
 - **Operación 100 % autónoma (local-first):** toda la lógica transaccional, el control de inventario, la producción por lotes y la analítica estadística residen en una base de datos **SQLite** local en modo WAL.
-- **Sincronización idempotente:** al finalizar la jornada o recuperar la conexión, el administrador puede enviar un snapshot JSON completo hacia un endpoint HTTP respaldado por **PostgreSQL** mediante `curl`, garantizando consistencia sin riesgo de colas corruptas ni pérdida de datos.
+- **Sincronización híbrida idempotente:** los movimientos locales se envían como eventos con `event_uuid` (outbox transaccional), las ventas e-commerce se traen por cursor y un snapshot completo cierra cada ciclo. Todo mediante `curl`, sin colas corruptas ni pérdida de datos.
 
 ---
 
@@ -21,7 +21,7 @@ Los emprendimientos artesanales y los puntos de venta móviles suelen enfrentar 
 El proyecto sigue una separación estricta de responsabilidades inspirada en los patrones **MVC** y **Repository**.
 
 - **Servidor HTTP y ruteo:** `socat` escucha en el puerto TCP configurado y delega cada petición a `frontend/router.sh`.
-- **Persistencia (`model/`):** patrón Singleton (`db_singleton.sh`) que mantiene un coproceso SQLite activo por petición, con `foreign_keys = ON` y `journal_mode = WAL`. Esquema versionado (**v7**) con triggers de integridad y transacciones explícitas.
+- **Persistencia (`model/`):** patrón Singleton (`db_singleton.sh`) que mantiene un coproceso SQLite activo por petición, con `foreign_keys = ON` y `journal_mode = WAL`. Esquema versionado (**v8**) con triggers de integridad y transacciones explícitas.
 - **Lógica de negocio (`api/` y `repositories/`):** servicios modulares en Bash puro para catálogo, inventario, facturación, analítica y sincronización remota.
 - **Interfaz de usuario (`frontend/`):** vistas HTML generadas en el servidor, acompañadas de **Web Components** nativos (`<erp-modal>`, `<product-manager>`, `<combo-builder>`, `<invoice-generator>`, entre otros) y CSS/JavaScript puro, sin dependencias de terceros.
 
@@ -55,10 +55,12 @@ flowchart TB
 - **Inventario y manufactura artesanal:** control de productos simples, combos dinámicos (cuya disponibilidad se calcula en tiempo real según el stock de sus componentes) e insumos de producción.
 - **Recetas y lotes:** definición de fórmulas por unidad y pasos de preparación. El alta de un lote de producción (`ProductionBatches`) descuenta automáticamente los insumos requeridos y suma el producto terminado mediante triggers ACID.
 - **Ventas directas y pedidos:** diferenciación entre ventas de mostrador (`direct`, con impacto inmediato en stock) y pedidos programados (`order`, con reserva y descuento al finalizar).
+- **Ferias y eventos:** asignación temporal de stock (`SEDE → FERIA`), ventas vinculadas a un evento, cierre con devolución de sobrantes/pérdidas y utilidad neta histórica en centavos.
 - **Cálculos monetarios:** importes autoritativos calculados en enteros (centavos) del lado del servidor.
 - **Compras y reposición inteligente:** alertas automáticas de stock bajo y sugerencias de compra calculadas según la demanda histórica y los tiempos de entrega (*lead time*).
 - **Facturación offline:** emisión de comprobantes (`V-*`, `P-*`, `C-*`) listos para imprimir o exportar a PDF directamente desde el navegador, sin conexión.
-- **Auditoría inmutable y seguridad:** bitácora completa (`InventoryJournal`) impulsada por triggers de base de datos, autenticación con hashes SHA-256 y sal, sesiones mediante cookies `HttpOnly`, roles (`admin` / `cajero`) y autorización por PIN para anulaciones.
+- **Auditoría inmutable y seguridad:** bitácora completa (`InventoryJournal`) impulsada por triggers de base de datos, con payload JSON, `event_uuid`, `origin` y `synced` para replicación idempotente; autenticación con hashes SHA-256 y sal, sesiones mediante cookies `HttpOnly`, roles (`admin` / `cajero`) y autorización por PIN para anulaciones.
+- **Respaldo en caliente:** `./erp.sh backup [ruta]` genera una copia consistente de SQLite en `shared/data/backups/`.
 
 ### 📊 Inteligencia de negocio y motor estadístico (`api/analytics.sh`)
 
@@ -104,7 +106,7 @@ sudo apt update && sudo apt install -y sqlite3 socat curl
    cd ERP_bash
    ```
 
-2. Inicializar la base de datos (crea el esquema v7 y carga datos de demostración):
+2. Inicializar la base de datos (crea el esquema v8 y carga datos de demostración):
 
    ```bash
    ./erp.sh init
@@ -138,7 +140,8 @@ sudo apt update && sudo apt install -y sqlite3 socat curl
 | `/dashboard` | Panel gerencial con KPIs, alertas de stock, gráficos y resumen estadístico (`#resumen`, `#stock`, `#catalogo`, `#agenda`). |
 | `/inteligencia` | Matriz de correlación de Pearson completa, combos sugeridos y análisis de sustitutos. |
 | `/inventario` | Gestión de productos, insumos, recetas, armado de combos y registro de lotes de producción. |
-| `/ventas` | Registro de ventas directas, gestión de estados de pedidos y emisión de comprobantes. |
+| `/ventas` | Registro de ventas directas, gestión de estados de pedidos, selección de canal/evento y emisión de comprobantes. |
+| `/eventos` | Ferias: KPIs, gráficos, asignación de stock, detalle de ventas/comprobantes y movimientos, cierre con pérdidas, respaldo previo y devolución de sobrantes. |
 | `/compras` | Órdenes de compra a proveedores y flujo de reposición sugerida. |
 | `/auditoria` | Historial completo de `InventoryJournal`, con búsqueda y trazabilidad de entidades. |
 | `/contactos` | Agenda de clientes (mayoristas y minoristas) y proveedores. |
@@ -148,26 +151,28 @@ sudo apt update && sudo apt install -y sqlite3 socat curl
 
 | Área | Endpoints |
 |---|---|
-| Estado y analítica | `/api/health`, `/api/dashboard`, `/api/alerts`, `/api/analytics/basket` |
+| Estado y analítica | `/api/health`, `/api/dashboard`, `/api/alerts`, `/api/analytics/basket`, `/api/analytics/events-summary` |
 | Catálogo e inventario | `/api/products`, `/api/inputs`, `/api/production`, `/api/recommendations` |
 | Operaciones | `/api/sales`, `/api/orders`, `/api/purchases`, `/api/invoices/{sales\|orders\|purchases}/:id` |
+| Eventos | `/api/events`, `/api/events/active`, `/api/events/:id`, `/api/events/:id/stats`, `/api/events/:id/stock`, `/api/events/:id/close`, `/api/events/:id/cancel` |
 | Sistema | `/api/audit`, `/api/contacts`, `/api/business-info`, `/api/sync/{status\|config\|push}` |
 
 ---
 
 ## 🔄 6. Sincronización con PostgreSQL
 
-La sincronización se realiza mediante un **snapshot JSON completo**, generado localmente y enviado mediante `curl` de forma idempotente (`ON CONFLICT DO UPDATE`) hacia un endpoint receptor en PostgreSQL.
+La sincronización es **híbrida e idempotente**, en tres fases ejecutadas por `POST /api/sync/push`:
 
 ```text
-POST /api/sync/push
-    -> local_repo_snapshot_json()
-    -> pg_repo_push()
-    -> SyncLog
+1. Push eventos locales  -> InventoryJournal synced=0 -> mode=events
+2. Pull e-commerce       -> mode=pull&since_id=N    -> Sales + stock SEDE
+3. Snapshot de respaldo  -> mode=snapshot          -> SyncLog
 ```
 
-- **Offline-first:** si la red falla, SQLite continúa operando localmente y sin interrupciones. Los datos locales no se pierden ni se bloquea la operación.
-- **Seguridad:** los tokens de autenticación se almacenan de forma segura en `AppContext` y no se exponen en las respuestas de la API pública.
+- **Outbox transaccional:** cada mutación y su evento se confirman en la misma transacción SQLite; `event_uuid` evita duplicados remotos.
+- **Offline-first:** si la red falla, SQLite continúa operando localmente y sin interrupciones. Los pendientes se reintentan en la siguiente sincronización.
+- **Seguridad:** los tokens de autenticación se almacenan en `AppContext` y no se exponen en las respuestas de la API pública.
+- **Respaldo:** `./erp.sh backup` copia la base sin detener el servidor.
 
 ---
 
@@ -181,5 +186,5 @@ Para consultas detalladas sobre la implementación interna, podés revisar los s
 | [RUTAS.md](docs/RUTAS.md) | Contratos completos de API y payloads. |
 | [BASE_DE_DATOS.md](docs/BASE_DE_DATOS.md) | Diccionario de datos, triggers e índices. |
 | [DIAGRAMAS.md](docs/DIAGRAMAS.md) | Diagramas Mermaid de clases, módulos, base de datos, estados y secuencias. |
-| [SINCRONIZACION.md](docs/SINCRONIZACION.md) | Contrato del snapshot y sincronización con PostgreSQL. |
+| [SINCRONIZACION.md](docs/SINCRONIZACION.md) | Contrato híbrido (eventos, pull y snapshot) con PostgreSQL. |
 | [ESTADISTICA.md](docs/ESTADISTICA.md) | Fundamentos matemáticos del motor analítico. |

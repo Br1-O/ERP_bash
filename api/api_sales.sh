@@ -18,12 +18,20 @@ api_register_sale() {
     local -n _quantities=$4
     local discount_type="${5:-none}"
     local discount_value="${6:-0}"
+    local event_id="${7:-0}"
 
     AUTH_ERROR=""
     SALE_ID=""
     SALE_TOTAL=""
     SALE_SUBTOTAL=""
     SALE_DISCOUNT=""
+
+    [[ "${event_id}" =~ ^[0-9]+$ ]] || event_id=0
+    if (( event_id > 0 )); then
+        local event_status
+        event_status=$(db_scalar "SELECT status FROM Events WHERE id = ${event_id};" 2>/dev/null || true)
+        [[ "${event_status}" == "active" ]] || { AUTH_ERROR="El evento no existe o no está activo."; return 1; }
+    fi
 
     if (( ${#_product_ids[@]} == 0 )); then
         AUTH_ERROR="La venta debe incluir al menos un producto."
@@ -73,7 +81,14 @@ api_register_sale() {
             tx_rollback
             return 1
         fi
-        if (( is_combo == 1 )); then
+        if (( event_id > 0 )); then
+            available=$(api_events_product_available_stock "${event_id}" "${product_id}")
+            if (( available < quantity_by_product[${product_id}] )); then
+                AUTH_ERROR="Stock insuficiente para '${name}' en el evento (disponible: ${available})."
+                tx_rollback
+                return 1
+            fi
+        elif (( is_combo == 1 )); then
             available=$(api_inv_product_available_stock "${product_id}")
             if (( available < quantity_by_product[${product_id}] )); then
                 AUTH_ERROR="Stock insuficiente de componentes para el combo '${name}' (disponible: ${available})."
@@ -99,16 +114,22 @@ api_register_sale() {
         return 1
     fi
 
-    local safe_subtotal safe_discount safe_total
+    local safe_subtotal safe_discount safe_total safe_event="NULL" sale_channel="LOCAL"
     safe_subtotal=$(billing_cents_to_decimal "${BILLING_SUBTOTAL_CENTS}")
     safe_discount=$(billing_cents_to_decimal "${BILLING_DISCOUNT_CENTS}")
     safe_total=$(billing_cents_to_decimal "${BILLING_TOTAL_CENTS}")
+    if (( event_id > 0 )); then
+        safe_event="${event_id}"
+        sale_channel="FERIA"
+    fi
 
     if ! db_exec "INSERT INTO Sales (timestamp, customer_id, subtotal_amount, discount_type,
-                                    discount_value, discount_amount, total_amount, payment_method)
+                                    discount_value, discount_amount, total_amount, payment_method,
+                                    event_id, channel)
                   VALUES (datetime('now', 'localtime'), ${safe_customer}, ${safe_subtotal},
                           $(db_quote "${discount_type}"), ${BILLING_DISCOUNT_VALUE_DB},
-                          ${safe_discount}, ${safe_total}, $(db_quote "${payment_method}"));"; then
+                          ${safe_discount}, ${safe_total}, $(db_quote "${payment_method}"),
+                          ${safe_event}, $(db_quote "${sale_channel}"));"; then
         AUTH_ERROR="No se pudo registrar la venta."
         tx_rollback
         return 1

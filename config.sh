@@ -30,6 +30,7 @@ load_erp_modules() {
         api/billing.sh \
         api/api_sales.sh \
         api/api_orders.sh \
+        api/api_events.sh \
         api/api_business.sh \
         api/api_invoices.sh \
         api/api_sync.sh \
@@ -41,6 +42,7 @@ load_erp_modules() {
         frontend/views/inventory.sh \
         frontend/views/purchases.sh \
         frontend/views/orders.sh \
+        frontend/views/events.sh \
         frontend/views/audit.sh \
         frontend/views/settings.sh \
         frontend/views/users.sh \

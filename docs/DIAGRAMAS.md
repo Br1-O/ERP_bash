@@ -85,6 +85,14 @@ classDiagram
         +api_invoice_order_json()
     }
 
+    class Events {
+        +api_events_create()
+        +api_events_add_stock()
+        +api_events_close()
+        +api_events_cancel()
+        +api_events_stats_json()
+    }
+
     class SyncService {
         +api_sync_save_config()
         +api_sync_push()
@@ -93,13 +101,16 @@ classDiagram
 
     class LocalRepository {
         +local_repo_snapshot_json()
-        +local_repo_save_sync_url()
-        +local_repo_save_sync_token()
-        +local_repo_record_sync()
+        +local_repo_pending_events_json()
+        +local_repo_apply_remote_events()
+        +local_repo_mark_events_synced_json()
+        +local_repo_last_remote_journal_id()
     }
 
     class PostgresRepository {
         +pg_repo_push()
+        +pg_repo_push_events()
+        +pg_repo_pull_events()
         +pg_repo_compose_endpoint()
     }
 
@@ -315,6 +326,39 @@ erDiagram
         TEXT cancelled_by
         TEXT cancel_authorized_by
         DATETIME cancelled_at
+        INTEGER event_id FK
+        TEXT channel
+    }
+
+    EVENTS {
+        INTEGER id PK
+        TEXT name
+        TEXT location
+        DATE start_date
+        DATE end_date
+        TEXT status
+        TEXT notes
+        TEXT created_by
+        TEXT closed_by
+        INTEGER total_revenue_cents
+        INTEGER total_cogs_cents
+        INTEGER total_loss_cents
+        INTEGER net_profit_cents
+        DATETIME created_at
+        DATETIME closed_at
+    }
+
+    EVENT_STOCK {
+        INTEGER id PK
+        INTEGER event_id FK
+        INTEGER product_id FK
+        INTEGER allocated_qty
+        INTEGER sold_qty
+        INTEGER loss_qty
+        INTEGER returned_qty
+        REAL unit_cost_snapshot
+        DATETIME created_at
+        DATETIME updated_at
     }
 
     SALE_ITEMS {
@@ -406,6 +450,9 @@ erDiagram
         TEXT entity
         TEXT payload
         TEXT status
+        TEXT event_uuid UK
+        TEXT origin
+        INTEGER synced
     }
 
     USERS {
@@ -460,6 +507,9 @@ erDiagram
     PRODUCTS ||--o{ TASTING_FEEDBACK : evaluado
     PURCHASES ||--o{ PURCHASE_ITEMS : contiene
     INPUTS ||--o{ PURCHASE_ITEMS : comprado
+    EVENTS ||--o{ EVENT_STOCK : asigna
+    PRODUCTS ||--o{ EVENT_STOCK : inventario
+    EVENTS ||--o{ SALES : vende
 ```
 
 ## 3. Estados de una venta o pedido
@@ -520,6 +570,23 @@ Notas:
 - El stock se aplica una sola vez al entrar en `finished`.
 - Reabrir resta el stock recibido y falla si ya fue consumido.
 - Con `stock_applied=1` no se editan ítems ni se elimina el pedido.
+
+### 3.2 Estados de un evento
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: POST /api/events
+    active --> active: + stock desde SEDE
+    active --> closed: Cerrar con pérdidas
+    active --> cancelled: Cancelar sin ventas/pérdidas
+    closed --> [*]: Inmutable
+    cancelled --> [*]: Inmutable
+```
+
+- `active`: acepta ventas/pedidos con `event_id`, ampliaciones de stock y
+  consultas de disponibilidad.
+- `closed`: liquida finanzas, devuelve sobrantes a `SEDE` y bloquea cambios.
+- `cancelled`: solo si `sold_qty=0` y `loss_qty=0`; devuelve el 100 % del stock.
 
 ## 4. Secuencia: reposición de insumo desde una alerta
 
@@ -630,13 +697,21 @@ sequenceDiagram
 
     Admin->>UI: Sincronizar
     UI->>API: POST /api/sync/push
+    API->>Local: local_repo_pending_events_json()
+    Local->>DB: SELECT InventoryJournal WHERE synced=0
+    DB-->>Local: Eventos JSON
+    API->>Remote: POST ?mode=events
+    Remote-->>API: event_uuids
+    API->>DB: UPDATE InventoryJournal SET synced=1
+    API->>Remote: GET ?mode=pull&since_id=N
+    Remote-->>API: events + last_remote_journal_id
+    API->>Local: local_repo_apply_remote_events()
+    Local->>DB: INSERT Sales/SaleItems + stock SEDE
     API->>Local: local_repo_snapshot_json()
-    Local->>DB: json_object de tablas de negocio
-    DB-->>Local: Snapshot JSON
-    Local-->>API: Snapshot
-    API->>Remote: POST ?source=sqlite&schema_version=7&mode=snapshot
+    Local->>DB: snapshot completo
+    API->>Remote: POST ?mode=snapshot
     Remote-->>API: 2xx
     API->>DB: INSERT SyncLog
-    API-->>UI: Estado y bytes enviados
+    API-->>UI: Push/Pull/Snapshot
     UI-->>Admin: Resultado
 ```

@@ -50,12 +50,13 @@ view_layout_start() {
     local extra_head="${7:-}"
 
     local dashboard_active="" contacts_active="" inventory_active="" purchases_active=""
-    local orders_active="" settings_active="" insights_active="" audit_active="" users_active=""
+    local orders_active="" settings_active="" insights_active="" audit_active="" users_active="" events_active=""
     [[ "${active_nav}" == "dashboard" ]] && dashboard_active="active"
     [[ "${active_nav}" == "contacts" ]] && contacts_active="active"
     [[ "${active_nav}" == "inventory" ]] && inventory_active="active"
     [[ "${active_nav}" == "purchases" ]] && purchases_active="active"
     [[ "${active_nav}" == "orders" ]] && orders_active="active"
+    [[ "${active_nav}" == "events" ]] && events_active="active"
     [[ "${active_nav}" == "settings" ]] && settings_active="active"
     [[ "${active_nav}" == "insights" ]] && insights_active="active"
     [[ "${active_nav}" == "audit" ]] && audit_active="active"
@@ -67,7 +68,7 @@ view_layout_start() {
     if [[ "${role}" == "admin" ]]; then is_admin=1; fi
 
     local dashboard_nav="" inventory_nav="" purchases_nav="" stock_nav="" catalog_nav=""
-    local insights_nav="" users_nav=""
+    local insights_nav="" users_nav="" events_nav=""
     if (( can_metrics == 1 )); then
         dashboard_nav='<a class="nav-link '"${dashboard_active}"'" href="/dashboard"><span class="nav-icon">◫</span><span>Dashboard</span></a>'
         stock_nav='<a class="nav-link" href="/dashboard#stock"><span class="nav-icon">▤</span><span>Stock y producción</span></a>'
@@ -78,13 +79,16 @@ view_layout_start() {
         inventory_nav='<a class="nav-link '"${inventory_active}"'" href="/inventario"><span class="nav-icon">◈</span><span>Inventario y recetas</span></a>'
         purchases_nav='<a class="nav-link '"${purchases_active}"'" href="/compras"><span class="nav-icon">⇄</span><span>Compras y reposición</span></a>'
     fi
+    if (( can_metrics == 1 || can_stock == 1 )); then
+        events_nav='<a class="nav-link '"${events_active}"'" href="/eventos"><span class="nav-icon">◭</span><span>Eventos y ferias</span></a>'
+    fi
     if (( is_admin == 1 )); then
         users_nav='<a class="nav-link '"${users_active}"'" href="/usuarios"><span class="nav-icon">♙</span><span>Usuarios y permisos</span></a>'
     fi
 
     local sync_button=""
     if [[ "${role}" == "admin" ]]; then
-        sync_button='<button class="btn ghost small sync-button" id="open-sync-modal" type="button" title="Sincronizar con PostgreSQL"><span aria-hidden="true">↻</span><span class="sync-label">Sincronizar</span></button>'
+        sync_button='<button class="btn ghost small sync-button" id="open-sync-modal" type="button" title="Sincronizar con PostgreSQL"><span aria-hidden="true">↻</span><span class="sync-label">Sincronizar</span><span class="sync-badge" id="sync-pending-badge" hidden>0</span></button>'
     fi
 
     local alert_pill=""
@@ -112,6 +116,7 @@ view_layout_start() {
                     <span class="nav-icon">▦</span>
                     <span>Pedidos y ventas</span>
                 </a>
+                ${events_nav}
                 ${purchases_nav}
                 <a class="nav-link ${contacts_active}" href="/contactos">
                     <span class="nav-icon">☏</span>

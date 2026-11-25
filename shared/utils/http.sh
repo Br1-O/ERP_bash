@@ -226,6 +226,58 @@ json_body_parse_items() {
     (( ${#_product_ids[@]} > 0 ))
 }
 
+json_body_parse_losses() {
+    local -n _loss_product_ids=$1
+    local -n _loss_quantities=$2
+    _loss_product_ids=()
+    _loss_quantities=()
+
+    if [[ "${HTTP_CONTENT_TYPE}" == *application/json* ]]; then
+        local compact inner
+        compact=$(printf '%s' "${HTTP_BODY}" | tr -d '\n\r')
+        inner=$(printf '%s' "${compact}" | sed -n 's/.*"losses"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
+        [[ -z "${inner}" ]] && return 1
+
+        local rest="${inner}" object product_id quantity
+        while [[ "${rest}" == *'{'* ]]; do
+            object="${rest#*\{}"
+            object="${object%%\}*}"
+            product_id=$(json_extract_raw "${object}" "product_id" || true)
+            quantity=$(json_extract_raw "${object}" "quantity" || true)
+            [[ -z "${quantity}" ]] && quantity=$(json_extract_raw "${object}" "loss_qty" || true)
+            if [[ -n "${product_id}" && -n "${quantity}" ]]; then
+                _loss_product_ids+=("${product_id}")
+                _loss_quantities+=("${quantity}")
+            fi
+            rest="${rest#*\}}"
+        done
+    else
+        local count product_id quantity i
+        count=$(http_param "losses_count" "0")
+        [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+
+        if (( count > 0 )); then
+            for (( i = 0; i < count; i++ )); do
+                product_id=$(http_param "loss_product_id_${i}" "")
+                quantity=$(http_param "loss_quantity_${i}" "")
+                if [[ -n "${product_id}" && -n "${quantity}" ]]; then
+                    _loss_product_ids+=("${product_id}")
+                    _loss_quantities+=("${quantity}")
+                fi
+            done
+        else
+            product_id=$(http_param "loss_product_id" "")
+            quantity=$(http_param "loss_quantity" "")
+            if [[ -n "${product_id}" && -n "${quantity}" ]]; then
+                _loss_product_ids+=("${product_id}")
+                _loss_quantities+=("${quantity}")
+            fi
+        fi
+    fi
+
+    (( ${#_loss_product_ids[@]} > 0 ))
+}
+
 json_body_parse_input_items() {
     local -n _input_ids=$1
     local -n _quantities=$2

@@ -1,8 +1,8 @@
 # Arquitectura
 
-Actualizado para el esquema **v7**, los pedidos de compra con estados, el alta
-de ventas directas desde `/ventas`, la anulación con motivo/PIN y la
-administración de vendedores y supervisores.
+Actualizado para el esquema **v8**, ferias/eventos con stock segmentado, ventas
+por canal, outbox transaccional y sincronización híbrida (eventos + pull +
+snapshot) con PostgreSQL.
 
 ## 1. Visión general
 
@@ -16,8 +16,8 @@ El ERP es una aplicación monolítica offline-first:
   petición.
 - **HTML/CSS/JavaScript nativo** construye la interfaz. No hay Node.js en el
   frontend, bundlers, frameworks SPA ni dependencias de terceros.
-- **curl** se usa únicamente para enviar el snapshot de sincronización a un
-  endpoint HTTP que escribe en PostgreSQL.
+- **curl** transporta los eventos pendientes, el pull e-commerce y el snapshot
+  de respaldo hacia un endpoint HTTP que escribe en PostgreSQL.
 
 Restricciones del proyecto:
 
@@ -92,7 +92,7 @@ La sesión se guarda en la tabla `Sessions` y viaja en la cookie
   Expone `db_query`, `db_scalar`, `db_exec`, `db_last_insert_id`, `db_quote`,
   `db_set_context_user`.
 - `model/schema.sh`: DDL, migraciones de columnas legacy, índices, triggers,
-  datos demo y versión `ERP_SCHEMA_VERSION=7`.
+  datos demo y versión `ERP_SCHEMA_VERSION=8`.
 - `model/transactions.sh`: `tx_begin`, `tx_commit`, `tx_rollback`.
 
 Los PRAGMA activos son:
@@ -116,7 +116,8 @@ PRAGMA foreign_keys = ON;
 | `api/api_orders.sh` | Listado unificado de ventas/pedidos; etapas, edición, baja lógica y anulación de pedidos. |
 | `api/api_business.sh` | Datos de la empresa. |
 | `api/api_invoices.sh` | Facturas JSON de compras, pedidos y ventas directas finalizadas. |
-| `api/api_sync.sh` | Configuración, snapshot y envío al endpoint remoto. |
+| `api/api_events.sh` | Eventos/ferias, asignación de stock, cierre con pérdidas, estadísticas y series. |
+| `api/api_sync.sh` | Configuración, push de eventos, pull e-commerce y snapshot de respaldo. |
 | `api/billing.sh` | Estrategias de descuento y conversión a centavos. |
 | `api/analytics.sh` | KPIs, series, alertas, reposición, intervalos, regresión y canasta. |
 
@@ -141,6 +142,12 @@ PRAGMA foreign_keys = ON;
 - Un pedido de compra nace en `pending`; al pasar a `finished` actualiza el
   stock y el costo del insumo por cada ítem.
 - Los importes de venta se recalculan en el servidor con enteros en centavos.
+- Crear un evento transfiere stock de `SEDE` a `EventStock`; las ventas de
+  feria consumen solo `EventStock` y nunca `Products.stock`.
+- Al cerrar un evento se calculan pérdidas/sobrantes con costo histórico y se
+  devuelve el stock sobrante a `SEDE`; el evento queda inmutable.
+- Cada mutación y su fila de `InventoryJournal` se confirman en la misma
+  transacción. El journal es el outbox de sincronización (`synced=0`).
 
 ## 6. Frontend
 
@@ -249,6 +256,20 @@ Dashboard /inventario?product=ID&produce=1
   -> INSERT ProductionInputs (trigger descuenta insumos)
 ```
 
+### 7.4.1 Eventos y ferias
+
+```text
+/eventos -> "+ Nuevo evento"
+  -> POST /api/events con productos/cantidades
+  -> INSERT Events + EventStock
+  -> trigger descuenta Products.stock (SEDE -> FERIA)
+/ventas -> venta/pedido con event_id
+  -> trigger consume EventStock.sold_qty
+/eventos -> "Cerrar"
+  -> POST /api/events/:id/close con pérdidas
+  -> calcula sobrantes, devuelve stock y congela finanzas
+```
+
 ### 7.5 Facturación
 
 ```text
@@ -264,12 +285,17 @@ el PDF y la impresión sin conexión.
 
 ```text
 POST /api/sync/push
-  -> local_repo_snapshot_json()
-  -> pg_repo_push() con Bearer + apikey
-  -> SyncLog (ok/error, endpoint, bytes)
+  -> Fase 1: local_repo_pending_events_json()
+             pg_repo_push_events() -> marcar synced=1
+  -> Fase 2: pg_repo_pull_events(last_remote_journal_id)
+             local_repo_apply_remote_events() -> Sales/stock SEDE
+  -> Fase 3: local_repo_snapshot_json()
+             pg_repo_push() -> SyncLog (ok/error, endpoint, bytes)
 ```
 
-Ver [SINCRONIZACION.md](SINCRONIZACION.md) para el contrato completo.
+Cada fase falla de forma independiente. El pull usa `event_uuid` para no
+duplicar ventas ni movimientos. Ver
+[SINCRONIZACION.md](SINCRONIZACION.md) para el contrato completo.
 
 ## 8. Seguridad y permisos
 
